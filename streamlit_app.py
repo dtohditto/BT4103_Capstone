@@ -3,8 +3,17 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import plotly.express as px
-import io, zipfile
+import io, zipfile, math, textwrap
 import plotly.io as pio
+from datetime import datetime
+
+# Exports
+from pptx import Presentation
+from pptx.util import Inches, Pt
+from pptx.enum.text import PP_ALIGN
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import ImageReader
 
 import CSVCuration
 
@@ -98,7 +107,7 @@ st.title("Executive Education Analytics Dashboard")
 # ------------------------------
 UNKNOWN_LIKE = {
     "unknown", "unspecified", "not specified", "not provided", "not available",
-    "n/a", "na", "null", "none", "-", "", "Others"
+    "n/a", "na", "null", "none", "-", "", 
 }
 
 def _safe_key(label: str, suffix: str) -> str:
@@ -248,28 +257,264 @@ def add_unknown_checkbox_and_note(
 
     return filtered
 
+# Registry to capture all figures rendered in this session (for export)
+# Dict: stable_name -> {"name": stable_name, "fig": go.Figure, "data": DataFrame|None, "meta": {...}}
+if "export_figs" not in st.session_state or not isinstance(st.session_state["export_figs"], dict):
+    st.session_state["export_figs"] = {}
+
+def register_dataset(label: str, df: pd.DataFrame):
+    if "export_figs" not in st.session_state or not isinstance(st.session_state["export_figs"], dict):
+        st.session_state["export_figs"] = {}
+
+    base = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in (label or "dataset"))
+    # Prefer attaching to the last plotted figure if available
+    name = st.session_state.get("last_export_name", base)
+
+    if name in st.session_state["export_figs"]:
+        st.session_state["export_figs"][name]["data"] = df.copy()
+    else:
+        st.session_state["export_figs"][base] = {"name": base, "fig": None, "data": df.copy(), "meta": {}}
+        st.session_state["last_export_name"] = base
+
+def _fig_to_png(fig, scale=2):
+    """Return PNG bytes for a Plotly figure or None if conversion fails or bytes are not PNG."""
+    try:
+        # Force kaleido engine and PNG format
+        b = pio.to_image(fig, format="png", scale=scale, engine="kaleido")
+    except Exception as e:
+        print("⚠️ to_image failed:", e)
+        return None
+
+    # Basic integrity checks: non-empty and PNG signature
+    if not b or len(b) < 100:  # tiny payloads are almost certainly invalid
+        print("⚠️ to_image produced empty/short bytes")
+        return None
+    if b[:8] != b"\x89PNG\r\n\x1a\n":
+        print("⚠️ to_image did not return PNG bytes (bad magic header)")
+        return None
+
+    return b
+
+def build_powerpoint(fig_entries: list[dict]) -> bytes:
+    prs = Presentation()
+    # Prefer Title Only layout (index 5) if present; fall back to Title+Content (1) or Blank (0)
+    layout_idx = 5 if len(prs.slide_layouts) > 5 else (1 if len(prs.slide_layouts) > 1 else 0)
+    slide_layout = prs.slide_layouts[layout_idx]
+
+    for item in fig_entries:
+        fig = item.get("fig", None)
+        if fig is None:
+            # Data-only entries are fine for Excel, not PPT
+            continue
+
+        # Convert to PNG safely
+        img_bytes = _fig_to_png(fig, scale=2)
+        if img_bytes is None:
+            print("⚠️ Skipping figure (invalid PNG bytes):", item.get("name"))
+            continue
+
+        # Create slide
+        slide = prs.slides.add_slide(slide_layout)
+
+        # Title (if layout has a title placeholder)
+        title_text = (item.get("meta", {}) or {}).get("title") or item.get("name") or "Chart"
+        if getattr(slide.shapes, "title", None):
+            slide.shapes.title.text = title_text
+
+        # Add image (use a fresh BytesIO)
+        img_stream = io.BytesIO(img_bytes)
+        slide.shapes.add_picture(
+            img_stream,
+            Inches(0.5),   # left
+            Inches(1.2),   # top
+            width=Inches(9.0)  # keep aspect ratio
+        )
+
+        # Footer
+        textbox = slide.shapes.add_textbox(Inches(0.5), Inches(7.0), Inches(9.0), Inches(0.4))
+        tf = textbox.text_frame
+        tf.text = f"Generated: {datetime.now():%Y-%m-%d %H:%M} | {item.get('name','')}"
+        tf.paragraphs[0].font.size = Pt(9)
+        tf.paragraphs[0].alignment = PP_ALIGN.RIGHT
+
+    mem = io.BytesIO()
+    prs.save(mem)
+    mem.seek(0)
+    return mem.getvalue()
+
+def prepare_images_for_ppt(fig_entries: list[dict], scale: int = 2):
+    """Return (ok, skipped) where ok contains PNG-ready items and skipped contains names that failed conversion."""
+    ok, skipped = [], []
+    for it in fig_entries:
+        fig = it.get("fig")
+        if fig is None:
+            continue  # data-only items are fine for Excel, but not for PPT
+        png = _fig_to_png(fig, scale=scale)
+        if png is None:
+            skipped.append(it.get("name", "unnamed"))
+            continue
+        ok.append({
+            "name": it.get("name", "chart"),
+            "meta": it.get("meta", {}),
+            "png": png,
+        })
+    return ok, skipped
+
+
+def build_powerpoint_from_pngs(png_entries: list[dict]) -> bytes:
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+    from pptx.enum.text import PP_ALIGN
+    import io
+    from datetime import datetime
+
+    prs = Presentation()
+    layout_idx = 5 if len(prs.slide_layouts) > 5 else (1 if len(prs.slide_layouts) > 1 else 0)
+    slide_layout = prs.slide_layouts[layout_idx]
+
+    added = 0
+    for item in png_entries:
+        slide = prs.slides.add_slide(slide_layout)
+        title_text = (item.get("meta", {}) or {}).get("title") or item.get("name") or "Chart"
+        if getattr(slide.shapes, "title", None):
+            slide.shapes.title.text = title_text
+
+        img_stream = io.BytesIO(item["png"])
+        slide.shapes.add_picture(img_stream, Inches(0.5), Inches(1.2), width=Inches(9.0))
+
+        footer = slide.shapes.add_textbox(Inches(0.5), Inches(7.0), Inches(9.0), Inches(0.4))
+        tf = footer.text_frame
+        tf.text = f"Generated: {datetime.now():%Y-%m-%d %H:%M} | {item.get('name','')}"
+        tf.paragraphs[0].font.size = Pt(9)
+        tf.paragraphs[0].alignment = PP_ALIGN.RIGHT
+        added += 1
+
+    # If nothing got added, create a placeholder slide explaining why
+    if added == 0:
+        slide = prs.slides.add_slide(slide_layout)
+        if getattr(slide.shapes, "title", None):
+            slide.shapes.title.text = "No charts exported"
+        body = slide.shapes.add_textbox(Inches(0.5), Inches(1.8), Inches(9.0), Inches(2.0))
+        body.text_frame.text = ("No charts could be converted to images. "
+                                "Check that the charts have rendered in tabs 1–8 and that Kaleido is working.")
+
+    mem = io.BytesIO()
+    prs.save(mem)
+    mem.seek(0)
+    return mem.getvalue()
+
+def build_excel(fig_entries: list[dict]) -> bytes:
+    mem = io.BytesIO()
+    with pd.ExcelWriter(mem, engine="xlsxwriter") as writer:
+        wb = writer.book
+        # Style
+        pct_fmt = wb.add_format({"num_format": "0.0%"})
+        int_fmt = wb.add_format({"num_format": "#,##0"})
+
+        # Write a “Contents” sheet
+        contents = []
+        for item in fig_entries:
+            contents.append({
+                "Name": item["name"],
+                "Has Figure": item["fig"] is not None,
+                "Has Data": item["data"] is not None
+            })
+        pd.DataFrame(contents).to_excel(writer, sheet_name="Contents", index=False)
+
+        # One sheet per item (data only; images go via PPT/PDF)
+        for item in fig_entries:
+            if item["data"] is None:
+                continue
+            sheet = textwrap.shorten(item["name"], width=31, placeholder="")  # Excel sheet name limit
+            df = item["data"].copy()
+            df.to_excel(writer, sheet_name=sheet, index=False)
+            # Optional: format numerics
+            ws = writer.sheets[sheet]
+            for col_idx, col in enumerate(df.columns):
+                try:
+                    # Apply % format if column looks like a percent series
+                    if pd.api.types.is_float_dtype(df[col]) and (df[col].between(0, 1).all() or df[col].between(0, 100).all()):
+                        ws.set_column(col_idx, col_idx, 14, pct_fmt)
+                    else:
+                        ws.set_column(col_idx, col_idx, 16, int_fmt)
+                except Exception:
+                    ws.set_column(col_idx, col_idx, 16)
+    mem.seek(0)
+    return mem.getvalue()
+
+def build_pdf(fig_entries: list[dict]) -> bytes:
+    # Simple A4 portrait PDF: one chart per page (centered)
+    width, height = A4
+    margin = 36  # 0.5"
+    max_w = width - 2 * margin
+    max_h = height - 2 * margin - 24  # leave space for title
+
+    mem = io.BytesIO()
+    c = canvas.Canvas(mem, pagesize=A4)
+
+    for item in fig_entries:
+        if item["fig"] is None:
+            continue
+        # Title
+        title = item["meta"].get("title") or item["name"]
+        c.setFont("Helvetica-Bold", 12)
+        c.drawCentredString(width / 2, height - margin, title)
+
+        # Render figure to PNG
+        img_bytes = _fig_to_png(item["fig"], scale=2)
+        if img_bytes:
+            img = ImageReader(io.BytesIO(img_bytes))
+            iw, ih = img.getSize()
+
+            # Scale to fit
+            ratio = min(max_w / iw, max_h / ih)
+            w = iw * ratio
+            h = ih * ratio
+            x = (width - w) / 2
+            y = (height - h) / 2 - 12
+
+            c.drawImage(img, x, y, width=w, height=h, preserveAspectRatio=True, mask='auto')
+            # Footer
+            c.setFont("Helvetica", 8)
+            c.drawRightString(width - margin, margin / 2, f"Generated {datetime.now():%Y-%m-%d %H:%M} • {item['name']}")
+            c.showPage()
+            c.drawImage(img, x, y, width=w, height=h, preserveAspectRatio=True, mask='auto')
+        else:
+            c.setFont("Helvetica", 11)
+            c.drawCentredString(width/2, height/2, "Image render unavailable (install 'kaleido').")
+
+    c.save()
+    mem.seek(0)
+    return mem.getvalue()
+
 # ---- Plot helper with unique keys ----
 if "plot_counter" not in st.session_state:
     st.session_state["plot_counter"] = 0
-
-# Registry to capture all figures rendered in this session (for export)
-if "export_figs" not in st.session_state:
-    st.session_state["export_figs"] = []  # list of dicts: {"name": str, "fig": go.Figure}
 
 def _next_plot_key(prefix: str) -> str:
     st.session_state["plot_counter"] += 1
     return f"{prefix}_{st.session_state['plot_counter']}"
 
-def plotly_show(fig, *, prefix: str, label: str | None = None, **kwargs):
-    # Render
+def plotly_show(fig, *, prefix: str, label: str | None = None, data_df: pd.DataFrame | None = None, **kwargs):
+    # Use a unique key for Streamlit rendering only (can still use the counter)
     key = _next_plot_key(prefix)
     st.plotly_chart(fig, use_container_width=True, key=key, **kwargs)
 
-    # Register for export (filename-safe)
-    base = label or prefix or "plot"
-    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in base)
-    filename_root = f"{safe}_{st.session_state['plot_counter']:03d}"
-    st.session_state["export_figs"].append({"name": filename_root, "fig": fig})
+    # Build a STABLE export name (no counter). Prefer explicit label; else prefix.
+    stable_name = (label or prefix or "plot")
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in stable_name)
+
+    # Upsert into dict so reruns overwrite instead of duplicate
+    st.session_state["export_figs"][safe] = {
+        "name": safe,
+        "fig": fig,
+        "data": (data_df.copy() if isinstance(data_df, pd.DataFrame) else st.session_state["export_figs"].get(safe, {}).get("data")),
+        "meta": {"title": label or prefix}
+    }
+
+    # Remember the last export entry name (so register_dataset can attach data)
+    st.session_state["last_export_name"] = safe
+
 
 def safe_plot(check_df: pd.DataFrame, plot_callable):
     if isinstance(check_df, pd.DataFrame) and check_df.empty:
@@ -503,8 +748,17 @@ with tab2:
             )
             fig_bar.update_traces(textposition="outside", cliponaxis=False)
             fig_bar.update_layout(xaxis_tickangle=-45, yaxis_title="Participants", xaxis_title="Country")
-            plotly_show(fig_bar, prefix="tab2_geo_pareto")
 
+            # ---- attach data for Excel export
+            export_df_tab2 = final_df[[country_col, "Participants", "Share_%"]].copy()
+            export_df_tab2.rename(columns={country_col: "Country"}, inplace=True)
+
+            plotly_show(
+                fig_bar,
+                prefix="tab2_geo_pareto",
+                label="Tab2 — Top Countries by Participants (Pareto)",
+                data_df=export_df_tab2
+            )
             sg_note = " (Singapore excluded)" if exclude_sg else ""
             st.caption(
                 f"Total participants shown: {total_universe:,}{sg_note}. "
@@ -627,7 +881,26 @@ with tab3:
             )
             fig_hm1.update_traces(hovertemplate=hover_tmpl)
             fig_hm1.update_layout(xaxis_title="Country Of Residence", yaxis_title="Programme (Anon)")
-            plotly_show(fig_hm1, prefix="tab3_prog_country_heatmap")
+            
+            # ---- attach data for Excel export (both raw counts and overall %)
+            df_export_hm1 = agg.copy()
+            total_hm1 = df_export_hm1["Participants"].sum()  # ✅ Safely recompute total here
+
+            df_export_hm1["Overall_%"] = (
+                df_export_hm1["Participants"] / total_hm1 * 100.0
+            ).round(2) if total_hm1 > 0 else 0.0
+
+            df_export_hm1.rename(columns={
+                prog_col: "Programme",
+                country_col: "Country"
+            }, inplace=True)
+
+            plotly_show(
+                fig_hm1,
+                prefix="tab3_prog_country_heatmap",
+                label="Tab3 — Programme × Country (Overall %)",
+                data_df=df_export_hm1
+            )
 
         # -------------------------------------------------------------
         # Heatmap 2: Top Countries × Primary Category (row % or raw)
@@ -714,7 +987,24 @@ with tab3:
                 )
                 fig_cat.update_traces(hovertemplate=hover_tmpl2)
                 fig_cat.update_layout(xaxis_title="Primary Category", yaxis_title="Country Of Residence")
-                plotly_show(fig_cat, prefix="tab3_country_primarycat_heatmap")
+                
+                # ---- attach data for Excel export (raw counts + row %)
+                df_export_hm2 = agg_cat.copy()
+                # compute row totals and row percentages
+                row_totals = df_export_hm2.groupby(country_col)["Participants"].transform("sum")
+                df_export_hm2["Row_%"] = (df_export_hm2["Participants"] / row_totals * 100.0).round(2)
+                df_export_hm2.rename(columns={
+                    country_col: "Country",
+                    "Primary Category": "Primary Category",
+                    "Participants": "Participants"
+                }, inplace=True)
+
+                plotly_show(
+                    fig_cat,
+                    prefix="tab3_country_primarycat_heatmap",
+                    label="Tab3 — Country × Primary Category (Row %)",
+                    data_df=df_export_hm2
+                )
     else:
         st.info("Required columns not found: ensure ‘Truncated Programme Name’ and ‘Country Of Residence’ exist in the dataset.")
 
@@ -929,80 +1219,80 @@ with tab_6:
         else:
             st.info("Required columns not found: ensure ‘Age_Group’ and the selected category column exist.")
 
-        with sub_country:
-            st.markdown("##### Country Distribution per Category")
+    with sub_country:
+        st.markdown("##### Country Distribution per Category")
 
-            cat_type = st.radio(
-                "Choose category type:",
-                ["Primary Category", "Secondary Category"],
-                key="country_cat_type",
-                horizontal=True
+        cat_type = st.radio(
+            "Choose category type:",
+            ["Primary Category", "Secondary Category"],
+            key="country_cat_type",
+            horizontal=True
+        )
+        cat_col = cat_type
+        country_col = "Country Of Residence"
+
+        # Exclude SG toggle (same behavior as Tab 2 Pareto)
+        exclude_sg_tab6 = st.checkbox(
+            "Exclude Singapore (reduce skew)", value=False, key="tab6_exclude_sg"
+        )
+
+        if (cat_col in df_f.columns) and (country_col in df_f.columns):
+            # Category selector (keep Unknown at the end, just like elsewhere)
+            cat_values = (
+                df_f[cat_col].astype("string").fillna("Unknown").replace({"": "Unknown"}).unique().tolist()
             )
-            cat_col = cat_type
-            country_col = "Country Of Residence"
+            cat_values = [v for v in sorted(cat_values) if v != "Unknown"] + (["Unknown"] if "Unknown" in cat_values else [])
+            selected_cat = st.selectbox(f"Select {cat_type}:", cat_values, key="country_cat_select")
 
-            # Exclude SG toggle (same behavior as Tab 2 Pareto)
-            exclude_sg_tab6 = st.checkbox(
-                "Exclude Singapore (reduce skew)", value=False, key="tab6_exclude_sg"
-            )
-
-            if (cat_col in df_f.columns) and (country_col in df_f.columns):
-                # Category selector (keep Unknown at the end, just like elsewhere)
-                cat_values = (
-                    df_f[cat_col].astype("string").fillna("Unknown").replace({"": "Unknown"}).unique().tolist()
-                )
-                cat_values = [v for v in sorted(cat_values) if v != "Unknown"] + (["Unknown"] if "Unknown" in cat_values else [])
-                selected_cat = st.selectbox(f"Select {cat_type}:", cat_values, key="country_cat_select")
-
-                subset = df_f[df_f[cat_col].astype("string").fillna("Unknown") == selected_cat].copy()
-                if subset.empty:
-                    st.info("No rows for this selection.")
-                else:
-                    # Same DQ note pattern as Tab 2
-                    dq_note_only(subset, country_col, "Country (this selection)")
-
-                    # Apply Exclude-SG first, like Tab 2 (case-insensitive)
-                    if exclude_sg_tab6:
-                        subset = subset[~_norm_str(subset[country_col]).eq("singapore")].copy()
-
-                    # Always drop Unknown/Missing, like Tab 2 Pareto
-                    s_norm = _norm_str(subset[country_col])
-                    mask_unknown = subset[country_col].isna() | s_norm.isin(UNKNOWN_LIKE)
-                    sub_valid = subset.loc[~mask_unknown].copy()
-
-                    if sub_valid.empty:
-                        st.info("No valid countries to display after removing Unknown (and Singapore, if excluded).")
-                    else:
-                        # Counts over the FULL shown universe (after SG filter, Unknown removed)
-                        counts_df = sub_valid[country_col].value_counts(dropna=False).reset_index()
-                        counts_df.columns = [country_col, "Participants"]
-
-                        # Denominator for percentages and caption share — same as Tab 2
-                        total_universe = int(counts_df["Participants"].sum())
-
-                        # Top-K slice
-                        final_df = counts_df.nlargest(int(top_k), "Participants").copy()
-                        final_df["Share_%"] = (final_df["Participants"] / total_universe * 100.0) if total_universe > 0 else 0.0
-
-                        # Plot with % labels (same style as Tab 2 Pareto)
-                        fig = px.bar(
-                            final_df,
-                            x=country_col,
-                            y="Participants",
-                            title=f"Top {int(top_k)} Countries by Participants — {cat_type}: {selected_cat}",
-                            text=final_df["Share_%"].round(1).astype(str) + "%",
-                        )
-                        fig.update_traces(textposition="outside", cliponaxis=False)
-                        fig.update_layout(xaxis_tickangle=-45, yaxis_title="Participants", xaxis_title="Country")
-                        plotly_show(fig, prefix="tab6_country_dist_by_cat_like_tab2")
-
-                        sg_note = " (Singapore excluded)" if exclude_sg_tab6 else ""
-                        st.caption(
-                            f"Total participants shown: {total_universe:,}{sg_note}. "
-                            f"Top {int(top_k)} countries account for {final_df['Share_%'].sum():.1f}% of the shown total."
-                        )
+            subset = df_f[df_f[cat_col].astype("string").fillna("Unknown") == selected_cat].copy()
+            if subset.empty:
+                st.info("No rows for this selection.")
             else:
-                st.info("Required columns not found: make sure ‘Country Of Residence’ and category columns exist in the dataset.")
+                # Same DQ note pattern as Tab 2
+                dq_note_only(subset, country_col, "Country (this selection)")
+
+                # Apply Exclude-SG first, like Tab 2 (case-insensitive)
+                if exclude_sg_tab6:
+                    subset = subset[~_norm_str(subset[country_col]).eq("singapore")].copy()
+
+                # Always drop Unknown/Missing, like Tab 2 Pareto
+                s_norm = _norm_str(subset[country_col])
+                mask_unknown = subset[country_col].isna() | s_norm.isin(UNKNOWN_LIKE)
+                sub_valid = subset.loc[~mask_unknown].copy()
+
+                if sub_valid.empty:
+                    st.info("No valid countries to display after removing Unknown (and Singapore, if excluded).")
+                else:
+                    # Counts over the FULL shown universe (after SG filter, Unknown removed)
+                    counts_df = sub_valid[country_col].value_counts(dropna=False).reset_index()
+                    counts_df.columns = [country_col, "Participants"]
+
+                    # Denominator for percentages and caption share — same as Tab 2
+                    total_universe = int(counts_df["Participants"].sum())
+
+                    # Top-K slice
+                    final_df = counts_df.nlargest(int(top_k), "Participants").copy()
+                    final_df["Share_%"] = (final_df["Participants"] / total_universe * 100.0) if total_universe > 0 else 0.0
+
+                    # Plot with % labels (same style as Tab 2 Pareto)
+                    fig = px.bar(
+                        final_df,
+                        x=country_col,
+                        y="Participants",
+                        title=f"Top {int(top_k)} Countries by Participants — {cat_type}: {selected_cat}",
+                        text=final_df["Share_%"].round(1).astype(str) + "%",
+                    )
+                    fig.update_traces(textposition="outside", cliponaxis=False)
+                    fig.update_layout(xaxis_tickangle=-45, yaxis_title="Participants", xaxis_title="Country")
+                    plotly_show(fig, prefix="tab6_country_dist_by_cat_like_tab2")
+
+                    sg_note = " (Singapore excluded)" if exclude_sg_tab6 else ""
+                    st.caption(
+                        f"Total participants shown: {total_universe:,}{sg_note}. "
+                        f"Top {int(top_k)} countries account for {final_df['Share_%'].sum():.1f}% of the shown total."
+                    )
+        else:
+            st.info("Required columns not found: make sure ‘Country Of Residence’ and category columns exist in the dataset.")
 
 # --- Tab 7: Programme Cost
 with tab_7:
@@ -1239,61 +1529,63 @@ with tab_9:
     st.dataframe(df_f.sort_values("Run_Month").loc[:, preview_cols].head(500), use_container_width=True, hide_index=True)
     st.download_button("Download filtered CSV", data=df_f.to_csv(index=False).encode("utf-8-sig"), file_name="filtered_export.csv", mime="text/csv")
 
-tab_export, = st.tabs(["📦 Exports"])
+tab_export, = st.tabs(["📤 Exports"])
 with tab_export:
-    st.subheader("Export All Charts")
-    st.caption("Exports use *current* filtered data. Re-run your filters before exporting.")
+    st.subheader("Export Dashboard Insights")
+    st.caption("Exports reflect the **current filters**. Visit tabs 1–8 first so charts render and get captured here.")
 
-    fmt = st.radio(
-        "Choose export format",
-        ["Self-contained HTML (recommended)", "Static PNG (needs kaleido)", "Both"],
-        index=0,
-        key="export_fmt",
-        horizontal=True
+    registry = st.session_state.get("export_figs", {})
+    items = [v for v in registry.values() if (v.get("fig") is not None or v.get("data") is not None)]
+
+    st.info(
+        f"Charts captured: **{sum(1 for v in registry.values() if v.get('fig') is not None)}** • "
+        f"Tables captured: **{sum(1 for v in registry.values() if v.get('data') is not None)}**"
     )
 
-    # Optional: reset registry (in case you're testing)
-    colE1, colE2 = st.columns(2)
-    with colE1:
-        if st.button("🔄 Clear captured charts (this session)"):
-            st.session_state["export_figs"].clear()
-            st.success("Cleared.")
-    with colE2:
-        st.caption(f"Charts captured so far: **{len(st.session_state['export_figs'])}**")
+    export_choice = st.selectbox(
+        "Choose export format",
+        ["PowerPoint (.pptx)", "Excel (.xlsx)", "PDF (.pdf)", "All (ZIP with PPTX+XLSX+PDF)"],
+        index=0,
+        key="export_choice_tab10",
+    )
 
-    def build_zip_bytes(figs, fmt_choice: str) -> bytes:
-        mem = io.BytesIO()
-        with zipfile.ZipFile(mem, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for item in figs:
-                name = item["name"]
-                fig  = item["fig"]
-
-                if fmt_choice in ("Self-contained HTML (recommended)", "Both"):
-                    html = pio.to_html(fig, include_plotlyjs="cdn", full_html=False)
-                    zf.writestr(f"{name}.html", html)
-
-                if fmt_choice in ("Static PNG (needs kaleido)", "Both"):
-                    # This requires: pip install -U kaleido
-                    try:
-                        png_bytes = fig.to_image(format="png", scale=2)
-                        zf.writestr(f"{name}.png", png_bytes)
-                    except Exception as e:
-                        # Add a note to the zip so user knows why PNGs are missing
-                        zf.writestr(f"{name}_PNG_ERROR.txt",
-                                    f"PNG export failed. Install kaleido: pip install -U kaleido\n\n{e}")
-
-        mem.seek(0)
-        return mem.getvalue()
-
-    if st.button("📦 Build ZIP of all charts"):
-        if not st.session_state["export_figs"]:
-            st.warning("No charts captured yet. Visit tabs 1–8 so the charts render first.")
+    # Build files
+    if st.button("Build export files"):
+        items = [x for x in st.session_state["export_figs"] if (x.get("fig") is not None or x.get("data") is not None)]
+        if not items:
+            st.warning("No charts/tables captured yet. Navigate tabs 1–8 so visuals render first.")
         else:
-            zip_bytes = build_zip_bytes(st.session_state["export_figs"], st.session_state["export_fmt"])
-            st.download_button(
-                "⬇️ Download charts.zip",
-                data=zip_bytes,
-                file_name="charts.zip",
-                mime="application/zip"
-            )
-            st.success("ZIP ready!")
+            built = []
+
+            # Pre-render PNGs once so we know exactly how many valid charts we have
+            png_ok, png_skipped = prepare_images_for_ppt(items, scale=2)
+
+            if png_skipped:
+                st.warning("Skipped charts (failed image conversion): " + ", ".join(png_skipped[:10]) + ("..." if len(png_skipped) > 10 else ""))
+
+            if want_ppt:
+                ppt_bytes = build_powerpoint_from_pngs(png_ok)
+                built.append(("EE_Insights.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", ppt_bytes))
+
+            if want_xls:
+                xls_bytes = build_excel(items)  # Excel uses dataframes; keep as-is
+                built.append(("EE_Insights.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", xls_bytes))
+
+            if want_pdf:
+                # PDF still renders from figures directly; okay to keep your existing build_pdf(items)
+                pdf_bytes = build_pdf(items)
+                built.append(("EE_Insights.pdf", "application/pdf", pdf_bytes))
+
+            if not built:
+                st.info("No formats selected.")
+            elif add_zip and len(built) > 1:
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+                    for fname, _mime, b in built:
+                        zf.writestr(fname, b)
+                buf.seek(0)
+                st.download_button("⬇️ Download exports.zip", data=buf.getvalue(), file_name="EE_exports.zip", mime="application/zip")
+            else:
+                for fname, mime, b in built:
+                    st.download_button(f"⬇️ Download {fname}", data=b, file_name=fname, mime=mime)
+
