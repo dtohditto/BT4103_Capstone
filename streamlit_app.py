@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import plotly.express as px
+import io, zipfile
+import plotly.io as pio
 
 import CSVCuration
 
@@ -250,12 +252,24 @@ def add_unknown_checkbox_and_note(
 if "plot_counter" not in st.session_state:
     st.session_state["plot_counter"] = 0
 
+# Registry to capture all figures rendered in this session (for export)
+if "export_figs" not in st.session_state:
+    st.session_state["export_figs"] = []  # list of dicts: {"name": str, "fig": go.Figure}
+
 def _next_plot_key(prefix: str) -> str:
     st.session_state["plot_counter"] += 1
     return f"{prefix}_{st.session_state['plot_counter']}"
 
-def plotly_show(fig, *, prefix: str, **kwargs):
-    st.plotly_chart(fig, use_container_width=True, key=_next_plot_key(prefix), **kwargs)
+def plotly_show(fig, *, prefix: str, label: str | None = None, **kwargs):
+    # Render
+    key = _next_plot_key(prefix)
+    st.plotly_chart(fig, use_container_width=True, key=key, **kwargs)
+
+    # Register for export (filename-safe)
+    base = label or prefix or "plot"
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in base)
+    filename_root = f"{safe}_{st.session_state['plot_counter']:03d}"
+    st.session_state["export_figs"].append({"name": filename_root, "fig": fig})
 
 def safe_plot(check_df: pd.DataFrame, plot_callable):
     if isinstance(check_df, pd.DataFrame) and check_df.empty:
@@ -1224,3 +1238,62 @@ with tab_9:
 
     st.dataframe(df_f.sort_values("Run_Month").loc[:, preview_cols].head(500), use_container_width=True, hide_index=True)
     st.download_button("Download filtered CSV", data=df_f.to_csv(index=False).encode("utf-8-sig"), file_name="filtered_export.csv", mime="text/csv")
+
+tab_export, = st.tabs(["📦 Exports"])
+with tab_export:
+    st.subheader("Export All Charts")
+    st.caption("Exports use *current* filtered data. Re-run your filters before exporting.")
+
+    fmt = st.radio(
+        "Choose export format",
+        ["Self-contained HTML (recommended)", "Static PNG (needs kaleido)", "Both"],
+        index=0,
+        key="export_fmt",
+        horizontal=True
+    )
+
+    # Optional: reset registry (in case you're testing)
+    colE1, colE2 = st.columns(2)
+    with colE1:
+        if st.button("🔄 Clear captured charts (this session)"):
+            st.session_state["export_figs"].clear()
+            st.success("Cleared.")
+    with colE2:
+        st.caption(f"Charts captured so far: **{len(st.session_state['export_figs'])}**")
+
+    def build_zip_bytes(figs, fmt_choice: str) -> bytes:
+        mem = io.BytesIO()
+        with zipfile.ZipFile(mem, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for item in figs:
+                name = item["name"]
+                fig  = item["fig"]
+
+                if fmt_choice in ("Self-contained HTML (recommended)", "Both"):
+                    html = pio.to_html(fig, include_plotlyjs="cdn", full_html=False)
+                    zf.writestr(f"{name}.html", html)
+
+                if fmt_choice in ("Static PNG (needs kaleido)", "Both"):
+                    # This requires: pip install -U kaleido
+                    try:
+                        png_bytes = fig.to_image(format="png", scale=2)
+                        zf.writestr(f"{name}.png", png_bytes)
+                    except Exception as e:
+                        # Add a note to the zip so user knows why PNGs are missing
+                        zf.writestr(f"{name}_PNG_ERROR.txt",
+                                    f"PNG export failed. Install kaleido: pip install -U kaleido\n\n{e}")
+
+        mem.seek(0)
+        return mem.getvalue()
+
+    if st.button("📦 Build ZIP of all charts"):
+        if not st.session_state["export_figs"]:
+            st.warning("No charts captured yet. Visit tabs 1–8 so the charts render first.")
+        else:
+            zip_bytes = build_zip_bytes(st.session_state["export_figs"], st.session_state["export_fmt"])
+            st.download_button(
+                "⬇️ Download charts.zip",
+                data=zip_bytes,
+                file_name="charts.zip",
+                mime="application/zip"
+            )
+            st.success("ZIP ready!")
