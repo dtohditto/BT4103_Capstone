@@ -96,7 +96,7 @@ st.title("Executive Education Analytics Dashboard")
 # ------------------------------
 UNKNOWN_LIKE = {
     "unknown", "unspecified", "not specified", "not provided", "not available",
-    "n/a", "na", "null", "none", "-", ""
+    "n/a", "na", "null", "none", "-", "", "Others"
 }
 
 def _safe_key(label: str, suffix: str) -> str:
@@ -160,6 +160,7 @@ def apply_filter(series: pd.Series, selected: list[str]) -> pd.Series:
 
 def _norm_str(s: pd.Series) -> pd.Series:
     return s.astype("string").str.strip().str.lower()
+
 def coalesce_unknown(series: pd.Series) -> pd.Series:
     s = series.astype("string").str.strip()
     s_norm = s.str.lower()
@@ -742,11 +743,63 @@ with tab4:
         top_orgs.columns = ["Organisation", "Participants"]
         safe_plot(top_orgs, lambda: plotly_show(px.bar(top_orgs, x="Participants", y="Organisation", orientation="h", title=f"Top {top_k} Organisations"), prefix="tab4_top_orgs", theme="streamlit"))
 
+    if "Domain" in df_f.columns:
+        df_dom = add_unknown_checkbox_and_note(
+            df_f,
+            "Domain",
+            label="Domain",
+            key="domain_tab4",         
+            note_style="caption"
+        )
+
+        # Read the checkbox state that add_unknown_checkbox_and_note created
+        include_unknown_domain = bool(st.session_state.get("domain_tab4", False))
+
+        # If the checkbox is UNCHECKED, also hide literal "Others"
+        # 'Others' which is a valid classified category based on BERTopic results will be included in the 'Valid' count.
+        if not include_unknown_domain:
+            mask_others = (
+                df_dom["Domain"].astype("string").str.strip().str.lower() == "others"
+            )
+            df_dom = df_dom.loc[~mask_others].copy()
+
+        # Now compute the chart from the (optionally) trimmed df_dom
+        top_domains = (
+            df_dom["Domain"]
+            .value_counts(dropna=False)
+            .nlargest(int(top_k))
+            .reset_index()
+        )
+        top_domains.columns = ["Domain", "Participants"]
+
+        # Additional data-quality clarity note for Domain
+        st.caption(
+            "Note: **'Others'** is a valid derived category from clustering — "
+            "it is hidden by default for clearer insights, but **still counted as valid data** "
+            "in the data quality stats above."
+        )
+
+    safe_plot(
+        top_domains,
+        lambda: plotly_show(
+            px.bar(
+                top_domains,
+                x="Participants",
+                y="Domain",
+                orientation="h",
+                title=f"Top {int(top_k)} Domains",
+            ),
+            prefix="tab4_top_domains",
+            theme="streamlit",
+        ),
+    )
+
     if "Seniority" in df_f.columns:
         df_sen = add_unknown_checkbox_and_note(df_f, "Seniority", key="seniority", note_style="caption")
         sen = df_sen["Seniority"].value_counts().reset_index()
         sen.columns = ["Seniority", "Participants"]
         safe_plot(sen, lambda: plotly_show(px.bar(sen, x="Seniority", y="Participants", title="Participants by Seniority"), prefix="tab4_seniority"))
+    
     
 
 # --- Tab 5: Age & Demographics
