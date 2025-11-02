@@ -4,6 +4,8 @@ import numpy as np
 import streamlit as st
 import plotly.express as px
 
+import CSVCuration
+
 st.set_page_config(page_title="EE Analytics Dashboard", layout="wide")
 
 # ------------------------------
@@ -44,6 +46,38 @@ def load_data(path: str = "dashboard_curated_v2.csv") -> pd.DataFrame:
 
 
 # Allow user to upload a newer CSV (optional)
+new_uploaded_programme = st.sidebar.file_uploader("Upload a new programme CSV (optional)", type=["xlsm", "xlsx", "csv"])
+new_uploaded_cost = st.sidebar.file_uploader("Upload a new cost CSV (optional)", type=["xlsm", "xlsx", "csv"])
+# call the function and request CSV bytes
+res = CSVCuration.curate_programme_and_cost_data(new_uploaded_programme, new_uploaded_cost, return_csv_bytes=True)
+
+# res may be None, bytes, a DataFrame, or (DataFrame, bytes)
+csv_bytes = None
+df_curated = None
+if res is None:
+    csv_bytes = None
+elif isinstance(res, tuple):
+    df_curated, csv_bytes = res
+elif isinstance(res, (bytes, bytearray)):
+    csv_bytes = bytes(res)
+elif isinstance(res, pd.DataFrame):
+    df_curated = res
+    # produce bytes so the download button can work
+    try:
+        csv_bytes = df_curated.to_csv(index=False).encode("utf-8-sig")
+    except Exception:
+        csv_bytes = None
+
+if csv_bytes is not None:
+    st.sidebar.download_button(
+        "Download curated CSV",
+        data=csv_bytes,
+        file_name="dashboard_curated.csv",
+        mime="text/csv"
+    )
+else:
+    # No curated CSV available yet; show a helpful note instead of an invalid download button
+    st.sidebar.info("No curated CSV available — upload both programme and cost files to generate a curated CSV.")
 uploaded = st.sidebar.file_uploader("Upload a curated CSV (optional)", type=["csv"])
 data_path = uploaded if uploaded is not None else "dashboard_curated_v2.csv"
 
@@ -86,7 +120,12 @@ def _col_from_label(label: str) -> str:
 
 def multiselect_with_all_button(label: str, df_source: pd.DataFrame, default_all: bool = True):
     col = _col_from_label(label)
-    s = df_source.get(col, pd.Series([], dtype="object")).copy().fillna("Unknown")
+    raw = df_source.get(col, pd.Series([], dtype="object")).copy()
+    # If the column is categorical, convert to string first so fillna can add 'Unknown'
+    if pd.api.types.is_categorical_dtype(raw):
+        s = raw.astype("string").fillna("Unknown")
+    else:
+        s = raw.fillna("Unknown")
     options = sorted(s.unique().tolist())
 
     ms_key = _safe_key(label, "multi")
@@ -106,7 +145,11 @@ def multiselect_with_all_button(label: str, df_source: pd.DataFrame, default_all
 def apply_filter(series: pd.Series, selected: list[str]) -> pd.Series:
     if selected is None:
         return pd.Series(True, index=series.index)
-    s = series.fillna("Unknown")
+    # Avoid fillna on Categorical dtype (raises if the fill value is not a category)
+    if pd.api.types.is_categorical_dtype(series):
+        s = series.astype("string").fillna("Unknown")
+    else:
+        s = series.fillna("Unknown")
     all_opts = set(s.unique().tolist())
     sel_set  = set(selected or [])
     if not selected or sel_set == all_opts:
@@ -243,7 +286,12 @@ with st.sidebar:
         for label in UI_FILTER_LABELS:
             ms_key = _safe_key(label, "multi")
             col = _col_from_label(label)
-            series = df.get(col, pd.Series([], dtype="object")).fillna("Unknown")
+            series = df.get(col, pd.Series([], dtype="object")).copy()
+            # Avoid fillna on Categorical (can't add a new category) by casting to string first
+            if pd.api.types.is_categorical_dtype(series):
+                series = series.astype("string").fillna("Unknown")
+            else:
+                series = series.fillna("Unknown")
             st.session_state[ms_key] = sorted(series.unique().tolist())
         if "run_month_full_span" in st.session_state:
             st.session_state["run_month_range"] = st.session_state["run_month_full_span"]
@@ -608,7 +656,7 @@ with tab_6:
 
         if (cat_col in df_f.columns) and ("Age_Group" in df_f.columns):
             cat_values = (
-                df_f[cat_col].fillna("Unknown").astype(str).replace({"": "Unknown"}).unique().tolist()
+                df_f[cat_col].astype("string").fillna("Unknown").replace({"": "Unknown"}).unique().tolist()
             )
             # Put Unknown last
             cat_values = [v for v in sorted(cat_values) if v != "Unknown"] + (
@@ -616,7 +664,7 @@ with tab_6:
             )
             selected_cat = st.selectbox(f"Select {cat_type}:", cat_values, key="age_cat_select")
 
-            subset = df_f[df_f[cat_col].fillna("Unknown").astype(str) == selected_cat].copy()
+            subset = df_f[df_f[cat_col].astype("string").fillna("Unknown") == selected_cat].copy()
             if subset.empty:
                 st.info("No rows for this selection.")
             else:
@@ -677,12 +725,12 @@ with tab_6:
 
         if (cat_col in df_f.columns) and (country_col in df_f.columns):
             cat_values = (
-                df_f[cat_col].fillna("Unknown").astype(str).replace({"": "Unknown"}).unique().tolist()
+                df_f[cat_col].astype("string").fillna("Unknown").replace({"": "Unknown"}).unique().tolist()
             )
             cat_values = [v for v in sorted(cat_values) if v != "Unknown"] + (["Unknown"] if "Unknown" in cat_values else [])
             selected_cat = st.selectbox(f"Select {cat_type}:", cat_values, key="country_cat_select")
 
-            subset = df_f[df_f[cat_col].fillna("Unknown").astype(str) == selected_cat].copy()
+            subset = df_f[df_f[cat_col].astype("string").fillna("Unknown") == selected_cat].copy()
             if subset.empty:
                 st.info("No rows for this selection.")
             else:
@@ -777,6 +825,27 @@ with tab_7:
             fig_trend.update_layout(yaxis_title="Total Revenue ($)", xaxis_title="Month")
             plotly_show(fig_trend, prefix="tab7_monthly_revenue")
 
+            st.divider()
+            st.markdown("##### Top K Countries by Total Revenue")
+
+            if "Country Of Residence" in df_cost.columns:
+                top_countries = (
+                    df_cost.groupby("Country Of Residence")["Programme Cost"]
+                    .sum()
+                    .nlargest(top_k)
+                    .reset_index()
+                )
+                top_countries.columns = ["Country Of Residence", "Total Revenue"]
+
+                fig2 = px.bar(
+                    top_countries,
+                    x="Total Revenue",
+                    y="Country Of Residence",
+                    orientation="h",
+                    title=f"Top {top_k} Countries by Total Revenue" 
+                )
+                st.plotly_chart(fig2, use_container_width=True, theme="streamlit") 
+
 # --- Tab 8: Programme Deep Dive
 with tab_8:
     st.subheader("Programme Deep Dive")
@@ -798,7 +867,7 @@ with tab_8:
         st.info("No rows for this programme with current filters.")
         st.stop()
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         st.metric("Participants", f"{len(p):,}")
     with c2:
@@ -807,6 +876,8 @@ with tab_8:
         st.metric("Countries", int(p.get("Country Of Residence", pd.Series()).nunique() if "Country Of Residence" in p.columns else 0))
     with c4:
         st.metric("Median Age", f"{p['Age'].median():.0f}" if "Age" in p.columns and p["Age"].notna().any() else "—")
+    with c5:
+        st.metric("Cost", p["Programme Cost"].unique() if p["Programme Cost"].notna().any() else "Unknown")
     date_min = pd.to_datetime(p.get("Programme Start Date")).min() if "Programme Start Date" in p.columns else pd.NaT
     date_max = pd.to_datetime(p.get("Programme End Date")).max() if "Programme End Date" in p.columns else pd.NaT
     if pd.notna(date_min) and pd.notna(date_max):
