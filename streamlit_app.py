@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import plotly.express as px
-
 import CSVCuration
 
 st.set_page_config(page_title="EE Analytics Dashboard", layout="wide")
@@ -12,9 +11,11 @@ st.set_page_config(page_title="EE Analytics Dashboard", layout="wide")
 # Data loading & preparation
 # ------------------------------
 @st.cache_data
-def load_data(path: str = "dashboard_curated_v2.csv") -> pd.DataFrame:
-    """Load curated CSV and perform light, safe parsing for the app."""
-    df = pd.read_csv(path)
+def load_data(src) -> pd.DataFrame:
+    if isinstance(src, pd.DataFrame):
+        df = src.copy()
+    else:
+        df = pd.read_csv(src)
 
     # Parse key dates (coerce errors to NaT)
     for c in ["Programme Start Date", "Programme End Date", "Run_Month"]:
@@ -45,44 +46,69 @@ def load_data(path: str = "dashboard_curated_v2.csv") -> pd.DataFrame:
     return df
 
 
-# Allow user to upload a newer CSV (optional)
-new_uploaded_programme = st.sidebar.file_uploader("Upload a new programme CSV (optional)", type=["xlsm", "xlsx", "csv"])
-new_uploaded_cost = st.sidebar.file_uploader("Upload a new cost CSV (optional)", type=["xlsm", "xlsx", "csv"])
-# call the function and request CSV bytes
-res = CSVCuration.curate_programme_and_cost_data(new_uploaded_programme, new_uploaded_cost, return_csv_bytes=True)
+# --- Uploads & curation gate ---
+st.sidebar.header("Data")
+new_uploaded_programme = st.sidebar.file_uploader(
+    "Upload a new programme CSV/Excel (optional)", type=["csv", "xlsx", "xlsm", "xls"]
+)
+new_uploaded_cost = st.sidebar.file_uploader(
+    "Upload a new cost CSV/Excel (optional)", type=["csv", "xlsx", "xlsm", "xls"]
+)
+uploaded_curated = st.sidebar.file_uploader(
+    "Or upload an already-curated CSV", type=["csv"]
+)
 
-# res may be None, bytes, a DataFrame, or (DataFrame, bytes)
-csv_bytes = None
+run = st.sidebar.button("Run curation")
+
 df_curated = None
-if res is None:
-    csv_bytes = None
-elif isinstance(res, tuple):
-    df_curated, csv_bytes = res
-elif isinstance(res, (bytes, bytearray)):
-    csv_bytes = bytes(res)
-elif isinstance(res, pd.DataFrame):
-    df_curated = res
-    # produce bytes so the download button can work
-    try:
-        csv_bytes = df_curated.to_csv(index=False).encode("utf-8-sig")
-    except Exception:
-        csv_bytes = None
+csv_bytes = None
 
+# Only run curation when user clicks
+if run:
+    if not new_uploaded_programme and not new_uploaded_cost:
+        st.sidebar.error("Please upload at least one file to run curation.")
+    else:
+        # Call your curation; it should accept UploadedFile objects
+        res = CSVCuration.curate_programme_and_cost_data(
+            new_uploaded_programme, new_uploaded_cost, return_csv_bytes=True
+        )
+        if res is None:
+            st.sidebar.warning("No curated output produced. Check your inputs.")
+        elif isinstance(res, tuple):
+            df_curated, csv_bytes = res
+        elif isinstance(res, (bytes, bytearray)):
+            csv_bytes = bytes(res)
+        elif isinstance(res, pd.DataFrame):
+            df_curated = res
+            try:
+                csv_bytes = df_curated.to_csv(index=False).encode("utf-8-sig")
+            except Exception:
+                csv_bytes = None
+
+# Download curated CSV if available
 if csv_bytes is not None:
     st.sidebar.download_button(
         "Download curated CSV",
         data=csv_bytes,
         file_name="dashboard_curated.csv",
-        mime="text/csv"
+        mime="text/csv",
     )
 else:
-    # No curated CSV available yet; show a helpful note instead of an invalid download button
-    st.sidebar.info("No curated CSV available — upload both programme and cost files to generate a curated CSV.")
-uploaded = st.sidebar.file_uploader("Upload a curated CSV (optional)", type=["csv"])
-data_path = uploaded if uploaded is not None else "dashboard_curated_v2.csv"
+    st.sidebar.info("Upload files and click **Run curation**, or upload a curated CSV.")
 
-# Load the full dataset once; df is a working copy for filters
-df_full = load_data(data_path)
+# Decide the data source for the dashboard (NO local fallback)
+data_src = None
+if uploaded_curated is not None:
+    data_src = uploaded_curated          # file-like (preferred if provided)
+elif isinstance(df_curated, pd.DataFrame):
+    data_src = df_curated                # DataFrame from curation
+
+if data_src is None:
+    st.info("No data loaded. Upload a curated CSV, or upload raw files and click **Run curation**.")
+    st.stop()
+
+# Load & parse once
+df_full = load_data(data_src)
 df = df_full.copy()
 
 if df.empty:
