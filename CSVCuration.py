@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
-import umap
+from umap import UMAP
 import hdbscan
 from bertopic import BERTopic
 import seaborn as sns
@@ -315,7 +315,7 @@ def curate_programme_and_cost_data(programme_file, cost_file, output_path: Optio
     model = SentenceTransformer('all-MiniLM-L6-v2')
     embeddings = model.encode(curated_cleaned['Job Title Tagged'].tolist(), show_progress_bar=False)
  
-    umap_model = umap.UMAP(n_neighbors=50, n_components=5, metric='cosine', random_state=42)
+    umap_model = UMAP(n_neighbors=50, n_components=5, metric='cosine', random_state=42)
     hdbscan_model = hdbscan.HDBSCAN(min_cluster_size=50, min_samples=1, metric='euclidean', cluster_selection_method='eom')
 
     topic_model = BERTopic(umap_model=umap_model, hdbscan_model=hdbscan_model, embedding_model=model)

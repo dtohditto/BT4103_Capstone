@@ -7,3 +7,4 @@ openpyxl
 bertopic
 sentence-transformers
 hdbscan
+umap-learn
