@@ -7,33 +7,31 @@ import CSVCuration
 
 st.set_page_config(page_title="EE Analytics Dashboard", layout="wide")
 
-# ------------------------------
-# Data loading & preparation
-# ------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
+# Data loading & basic preparation
+# ──────────────────────────────────────────────────────────────────────────────
 @st.cache_data
 def load_data(src) -> pd.DataFrame:
-    if isinstance(src, pd.DataFrame):
-        df = src.copy()
-    else:
-        df = pd.read_csv(src)
+    """Accepts a DataFrame or a file-like CSV and returns a cleaned DataFrame."""
+    df = src.copy() if isinstance(src, pd.DataFrame) else pd.read_csv(src)
 
-    # Parse key dates (coerce errors to NaT)
+    # Dates
     for c in ["Programme Start Date", "Programme End Date", "Run_Month"]:
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
 
-    # Friendly label for charts (if not already present)
+    # Month label for charts
     if "Run_Month" in df.columns:
         df["Run_Month_Label"] = df["Run_Month"].dt.strftime("%Y-%m")
 
-    # Derive Age_Group once 
+    # Age buckets
     if "Age" in df.columns:
         age_num = pd.to_numeric(df["Age"], errors="coerce")
         bins    = [0, 34, 44, 54, 64, 200]
         labels  = ["<35", "35–44", "45–54", "55–64", "65+"]
         df["Age_Group"] = pd.cut(age_num, bins=bins, labels=labels, right=True).astype("string")
 
-    # Light category cleanup for common slicers
+    # Light tidy-up for common filters
     cat_cols = [
         "Application Status", "Applicant Type", "Primary Category",
         "Secondary Category", "Seniority", "Gender", "Country Of Residence",
@@ -46,17 +44,21 @@ def load_data(src) -> pd.DataFrame:
     return df
 
 
-# --- Uploads & curation gate (reordered + clearer UX) ---
+# ──────────────────────────────────────────────────────────────────────────────
+# Uploads & curation (sidebar)
+# ──────────────────────────────────────────────────────────────────────────────
 st.sidebar.header("Data")
 
 st.sidebar.info(
-    "**Use ONE of the two paths:**\n\n"
-    "1) **Path A – Already curated CSV**: Upload the curated CSV directly below (no need to click **Run curation**).\n"
-    "2) **Path B – Raw files**: Upload the **Programme** file and the **Cost** file, then click **Run curation**.\n"
-    "   When curation completes, **download the curated CSV and then upload it** in the **Curated CSV** section below."
+    "**Choose ONE path:**\n\n"
+    "1) **Path A – Curated CSV ready**\n"
+    "   Upload your curated CSV below (no need to click **Run curation**).\n\n"
+    "2) **Path B – Start from raw files**\n"
+    "   Upload the **Programme** file and the **Cost** file, then click **Run curation**.\n"
+    "   When it finishes, **download the curated CSV and upload it** under **Curated CSV** below."
 )
 
-# ---- Path B: raw uploads first ----
+# Path B — raw files
 st.sidebar.subheader("Path B — Upload raw files")
 new_uploaded_programme = st.sidebar.file_uploader(
     "Programme file (CSV/XLSX/XLSM/XLS)", type=["csv", "xlsx", "xlsm", "xls"], key="prog_upload"
@@ -65,7 +67,6 @@ new_uploaded_cost = st.sidebar.file_uploader(
     "Cost file (CSV/XLSX/XLSM/XLS)", type=["csv", "xlsx", "xlsm", "xls"], key="cost_upload"
 )
 
-# Run curation button (placed BEFORE the curated-CSV uploader)
 run = st.sidebar.button("▶️ Run curation", use_container_width=True)
 
 df_curated = None
@@ -91,10 +92,10 @@ if run:
             except Exception:
                 csv_bytes = None
 
-# Curated download (if curation just ran)
+# Curated CSV download (after curation)
 if csv_bytes is not None:
     st.sidebar.success(
-        "Curation complete. **Step 2:** Download the curated CSV **and then upload it** under **Path A → Curated CSV** below."
+        "Curation complete. **Step 2:** Download the curated CSV, then upload it under **Path A → Curated CSV**."
     )
     st.sidebar.download_button(
         "💾 Download curated CSV",
@@ -106,46 +107,38 @@ if csv_bytes is not None:
 else:
     st.sidebar.caption(
         "After curation completes, a download button will appear here. "
-        "Then **upload the curated CSV** under **Path A** below."
+        "Then upload the curated CSV under **Path A** below."
     )
 
 st.sidebar.divider()
 
-# ---- Path A: curated CSV upload AFTER the run button ----
+# Path A — curated CSV
 st.sidebar.subheader("Path A — Or upload a curated CSV")
-uploaded_curated = st.sidebar.file_uploader(
-    "Curated CSV", type=["csv"], key="curated_upload"
-)
+uploaded_curated = st.sidebar.file_uploader("Curated CSV", type=["csv"], key="curated_upload")
 
-# Decide the data source for the dashboard (NO local fallback)
-data_src = None
-if uploaded_curated is not None:
-    data_src = uploaded_curated          # Path A takes priority if provided
-elif isinstance(df_curated, pd.DataFrame):
-    # You can keep this to allow immediate use without re-upload,
-    # or remove it if you want to *force* re-upload after download.
-    data_src = df_curated
+# Pick data source (no local file fallback)
+data_src = uploaded_curated if uploaded_curated is not None else None
 
 if data_src is None:
     st.info(
-        "**No data loaded.** Use **Path A** (upload a curated CSV) **or** use **Path B** "
-        "(upload Programme & Cost, click **Run curation**, **download the curated CSV, then upload it** under **Curated CSV**)."
+        "**No data loaded.** Either upload a curated CSV (Path A), **or** upload Programme & Cost and run curation, "
+        "then upload the curated CSV (Path B)."
     )
     st.stop()
 
-# Load & parse once
+# One-time load
 df_full = load_data(data_src)
 df = df_full.copy()
 
 if df.empty:
-    st.info("No data loaded. Please upload a CSV or place dashboard_curated.csv next to this script.")
+    st.info("No data found. Please upload a curated CSV to continue.")
     st.stop()
 
 st.title("Executive Education Analytics Dashboard")
 
-# ------------------------------
-# Global constants & helpers
-# ------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers & shared settings
+# ──────────────────────────────────────────────────────────────────────────────
 UNKNOWN_LIKE = {
     "unknown", "unspecified", "not specified", "not provided", "not available",
     "n/a", "na", "null", "none", "-", "", "Others"
@@ -154,7 +147,7 @@ UNKNOWN_LIKE = {
 def _safe_key(label: str, suffix: str) -> str:
     return f"{label}_{suffix}".replace(" ", "_").lower()
 
-# UI label ↔ column mapping
+# UI label ↔ column map
 COL_MAP = {
     "Pri Category": "Primary Category",
     "Sec Category": "Secondary Category",
@@ -164,20 +157,19 @@ COL_MAP = {
     "Seniority": "Seniority",
     "Domain": "Domain",
 }
-UI_FILTER_LABELS = ["Application Status", "Applicant Type", "Pri Category",
-                    "Sec Category", "Country", "Seniority", "Domain"]
+UI_FILTER_LABELS = [
+    "Application Status", "Applicant Type", "Pri Category",
+    "Sec Category", "Country", "Seniority", "Domain"
+]
 
 def _col_from_label(label: str) -> str:
     return COL_MAP.get(label, label)
 
 def multiselect_with_all_button(label: str, df_source: pd.DataFrame, default_all: bool = True):
+    """Multiselect with a quick 'Select all' button."""
     col = _col_from_label(label)
     raw = df_source.get(col, pd.Series([], dtype="object")).copy()
-    # If the column is categorical, convert to string first so fillna can add 'Unknown'
-    if pd.api.types.is_categorical_dtype(raw):
-        s = raw.astype("string").fillna("Unknown")
-    else:
-        s = raw.fillna("Unknown")
+    s = raw.astype("string").fillna("Unknown") if pd.api.types.is_categorical_dtype(raw) else raw.fillna("Unknown")
     options = sorted(s.unique().tolist())
 
     ms_key = _safe_key(label, "multi")
@@ -195,21 +187,17 @@ def multiselect_with_all_button(label: str, df_source: pd.DataFrame, default_all
     return st.session_state[ms_key]
 
 def apply_filter(series: pd.Series, selected: list[str]) -> pd.Series:
+    """Return a boolean mask for the selected options (treat missing as 'Unknown')."""
     if selected is None:
         return pd.Series(True, index=series.index)
-    # Avoid fillna on Categorical dtype (raises if the fill value is not a category)
-    if pd.api.types.is_categorical_dtype(series):
-        s = series.astype("string").fillna("Unknown")
-    else:
-        s = series.fillna("Unknown")
+    s = series.astype("string").fillna("Unknown") if pd.api.types.is_categorical_dtype(series) else series.fillna("Unknown")
     all_opts = set(s.unique().tolist())
     sel_set  = set(selected or [])
     if not selected or sel_set == all_opts:
         return pd.Series(True, index=series.index)
     return s.isin(selected)
 
-# ---- Unknown/Missing helpers ----
-
+# “Unknown” helpers
 def _norm_str(s: pd.Series) -> pd.Series:
     return s.astype("string").str.strip().str.lower()
 
@@ -223,82 +211,75 @@ def filter_unknown_no_ui(df_in: pd.DataFrame, column: str, include_unknown: bool
     if column not in df_in.columns:
         return df_in
     s_norm = df_in[column].astype("string").str.strip().str.lower()
-    mask_unknown_or_missing = df_in[column].isna() | s_norm.isin(UNKNOWN_LIKE)
-    return df_in.copy() if include_unknown else df_in.loc[~mask_unknown_or_missing].copy()
+    mask = df_in[column].isna() | s_norm.isin(UNKNOWN_LIKE)
+    return df_in.copy() if include_unknown else df_in.loc[~mask].copy()
 
 def dq_caption(df_in: pd.DataFrame, column: str, label: str):
+    """Compact note showing Unknown + Missing share for a column."""
     if column not in df_in.columns:
         return
     s_norm = df_in[column].astype("string").str.strip().str.lower()
-    mask_unknown_or_missing = df_in[column].isna() | s_norm.isin(UNKNOWN_LIKE)
+    mask = df_in[column].isna() | s_norm.isin(UNKNOWN_LIKE)
     total = len(df_in)
-    unknown_combined = int(mask_unknown_or_missing.sum())
+    unknown_combined = int(mask.sum())
     valid = int(total - unknown_combined)
     pct = (lambda n: (n / total * 100.0) if total > 0 else 0.0)
     st.caption(
-        f"Data quality for **{label}** — Unknown + Missing: **{unknown_combined}** ({pct(unknown_combined):.1f}%), "
-        f"Valid: **{valid}** ({pct(valid):.1f}%)."
+        f"**Data quality — {label}:** Unknown + Missing **{unknown_combined}** ({pct(unknown_combined):.1f}%), "
+        f"Valid **{valid}** ({pct(valid):.1f}%)."
     )
 
 def dq_note_only(df_in: pd.DataFrame, column: str, label: str):
-    """Show a compact data-quality note (Unknown + Missing merged) with NO checkbox."""
+    """Same as above, without a checkbox control."""
     if column not in df_in.columns:
         return
     s = df_in[column]
     s_norm = s.astype("string").str.strip().str.lower()
-    mask_unknown_or_missing = s.isna() | s_norm.isin(UNKNOWN_LIKE)
+    mask = s.isna() | s_norm.isin(UNKNOWN_LIKE)
     total = len(df_in)
-    unknown_combined = int(mask_unknown_or_missing.sum())
+    unknown_combined = int(mask.sum())
     valid = int(total - unknown_combined)
     pct = lambda n: (n / total * 100.0) if total > 0 else 0.0
     st.caption(
-        f"Data quality for **{label}** — Unknown + Missing: **{unknown_combined}** ({pct(unknown_combined):.1f}%), "
-        f"Valid: **{valid}** ({pct(valid):.1f}%)."
-    )    
+        f"**Data quality — {label}:** Unknown + Missing **{unknown_combined}** ({pct(unknown_combined):.1f}%), "
+        f"Valid **{valid}** ({pct(valid):.1f}%)."
+    )
 
 def add_unknown_checkbox_and_note(
-    df_in: pd.DataFrame,
-    column: str,
-    *,
-    label: str | None = None,
-    key: str | None = None,
-    note_style: str = "caption",
+    df_in: pd.DataFrame, column: str, *, label: str | None = None,
+    key: str | None = None, note_style: str = "caption",
 ) -> pd.DataFrame:
+    """Optional checkbox to include/exclude Unknown + Missing for a specific section."""
     label = label or column
     if column not in df_in.columns:
-        st.warning(f"Column '{column}' not found; skipping Unknown filter for {label}.")
+        st.warning(f"Column '{column}' not found; skipping.")
         return df_in
 
     s_norm = df_in[column].astype("string").str.strip().str.lower()
-    mask_unknown_or_missing = df_in[column].isna() | s_norm.isin(UNKNOWN_LIKE)
+    mask = df_in[column].isna() | s_norm.isin(UNKNOWN_LIKE)
 
     total = len(df_in)
-    unknown_combined = int(mask_unknown_or_missing.sum())
+    unknown_combined = int(mask.sum())
     valid = int(total - unknown_combined)
 
     include_unknown = st.checkbox(
         f"Include 'Unknown' in {label}",
         value=False,
         key=key or f"include_unknown_{label}",
-        help="When unchecked, rows with missing or 'Unknown'-like values are excluded for this section.",
+        help="Uncheck to hide rows where this value is missing or unknown.",
     )
-    filtered = df_in.copy() if include_unknown else df_in.loc[~mask_unknown_or_missing].copy()
+    filtered = df_in.copy() if include_unknown else df_in.loc[~mask].copy()
 
     pct = (lambda n: (n / total * 100.0) if total > 0 else 0.0)
     note_text = (
-        f"**Data quality for {label}** — Unknown + Missing: **{unknown_combined}** ({pct(unknown_combined):.1f}%), "
-        f"Valid: **{valid}** ({pct(valid):.1f}%) • Analysis below **{'includes' if include_unknown else 'excludes'}** Unknown + Missing."
+        f"**Data quality — {label}:** Unknown + Missing **{unknown_combined}** ({pct(unknown_combined):.1f}%), "
+        f"Valid **{valid}** ({pct(valid):.1f}%). The charts below **{'include' if include_unknown else 'exclude'}** Unknown + Missing."
     )
-    if note_style == "warning":
-        st.warning(note_text)
-    elif note_style == "caption":
-        st.caption(note_text)
-    else:
-        st.info(note_text)
+    {"warning": st.warning, "caption": st.caption}.get(note_style, st.info)(note_text)
 
     return filtered
 
-# ---- Plot helper with unique keys ----
+# Plot helpers
 if "plot_counter" not in st.session_state:
     st.session_state["plot_counter"] = 0
 
@@ -310,17 +291,15 @@ def plotly_show(fig, *, prefix: str, **kwargs):
     st.plotly_chart(fig, use_container_width=True, key=_next_plot_key(prefix), **kwargs)
 
 def safe_plot(check_df: pd.DataFrame, plot_callable):
-    if isinstance(check_df, pd.DataFrame) and check_df.empty:
-        st.warning("No data to display after filtering. Try including 'Unknown'.")
-        return
-    if isinstance(check_df, pd.Series) and check_df.empty:
+    if isinstance(check_df, (pd.DataFrame, pd.Series)) and check_df.empty:
         st.warning("No data to display after filtering. Try including 'Unknown'.")
         return
     plot_callable()
 
-# ------------------------------
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Global date span (from df_full)
-# ------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
 if "Run_Month" in df_full.columns:
     full_min = pd.to_datetime(df_full["Run_Month"], errors="coerce").min()
     full_max = pd.to_datetime(df_full["Run_Month"], errors="coerce").max()
@@ -329,9 +308,9 @@ if "Run_Month" in df_full.columns:
     if "run_month_range" not in st.session_state:
         st.session_state["run_month_range"] = st.session_state["run_month_full_span"]
 
-# ------------------------------
-# Sidebar: Global buttons & date range
-# ------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
+# Sidebar: global filters
+# ──────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("Filters")
 
@@ -340,19 +319,14 @@ with st.sidebar:
             ms_key = _safe_key(label, "multi")
             col = _col_from_label(label)
             series = df.get(col, pd.Series([], dtype="object")).copy()
-            # Avoid fillna on Categorical (can't add a new category) by casting to string first
-            if pd.api.types.is_categorical_dtype(series):
-                series = series.astype("string").fillna("Unknown")
-            else:
-                series = series.fillna("Unknown")
+            series = series.astype("string").fillna("Unknown") if pd.api.types.is_categorical_dtype(series) else series.fillna("Unknown")
             st.session_state[ms_key] = sorted(series.unique().tolist())
         if "run_month_full_span" in st.session_state:
             st.session_state["run_month_range"] = st.session_state["run_month_full_span"]
 
     def clear_all_filters():
         for label in UI_FILTER_LABELS:
-            ms_key = _safe_key(label, "multi")
-            st.session_state[ms_key] = []
+            st.session_state[_safe_key(label, "multi")] = []
         if "run_month_full_span" in st.session_state:
             st.session_state["run_month_range"] = st.session_state["run_month_full_span"]
 
@@ -374,7 +348,7 @@ with st.sidebar:
         start_d, end_d = map(pd.to_datetime, st.session_state["run_month_range"])
         df = df[(df["Run_Month"] >= start_d) & (df["Run_Month"] <= end_d)]
 
-    # Per-filter multiselects with "Select all" buttons
+    # Per-filter multiselects
     sel_status   = multiselect_with_all_button("Application Status", df)
     sel_app_type = multiselect_with_all_button("Applicant Type", df)
     sel_primcat  = multiselect_with_all_button("Pri Category", df)
@@ -384,9 +358,7 @@ with st.sidebar:
     sel_domain   = multiselect_with_all_button("Domain", df)
     top_k = st.number_input("Top K (for Top-X charts)", min_value=3, max_value=50, value=10, step=1)
 
-# ------------------------------
-# Apply all filters to the working df
-# ------------------------------
+# Apply filters
 mask = (
     apply_filter(df.get(_col_from_label("Application Status"), pd.Series(index=df.index)), sel_status) &
     apply_filter(df.get(_col_from_label("Applicant Type"),     pd.Series(index=df.index)), sel_app_type) &
@@ -397,11 +369,11 @@ mask = (
     apply_filter(df.get(_col_from_label("Domain"),             pd.Series(index=df.index)), sel_domain)
 )
 df_f = df[mask].copy()
-st.caption(f"Filtered rows: {len(df_f):,} of {len(df):,}")
+st.caption(f"Showing **{len(df_f):,}** of **{len(df):,}** rows after filters")
 
-# ------------------------------
-# Tabs & Visualizations
-# ------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
+# Tabs & visuals
+# ──────────────────────────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4, tab5, tab_6, tab_7, tab_8, tab_9 = st.tabs([
     "📈 Time Series",
     "🗺️ Geography",
@@ -414,7 +386,7 @@ tab1, tab2, tab3, tab4, tab5, tab_6, tab_7, tab_8, tab_9 = st.tabs([
     "ℹ️ Data Preview",
 ])
 
-# --- Tab 1: Time Series
+# Tab 1: Time Series
 with tab1:
     st.subheader("Participants over Time")
     if "Run_Month" in df_f.columns:
@@ -441,25 +413,20 @@ with tab1:
             figq = px.bar(q, x="Start_Quarter", y="Applications", title="Applications by Start Quarter")
             plotly_show(figq, prefix="tab1_by_start_quarter")
 
-# --- Tab 2: Geography 
+# Tab 2: Geography
 with tab2:
     st.subheader("Geospatial: Participants by Country")
-
     country_col = "Country Of Residence"
     if country_col in df_f.columns:
-        # DQ note only (no checkbox)
         dq_note_only(df_f, country_col, "Country")
 
-        # Exclude Singapore toggle
-        exclude_sg = st.checkbox(
-            "Exclude Singapore (reduce skew)", value=False, key="geo_exclude_sg"
-        )
+        exclude_sg = st.checkbox("Exclude Singapore (reduce skew)", value=False, key="geo_exclude_sg")
 
         base = df_f.copy()
         if exclude_sg:
             base = base[base[country_col] != "Singapore"].copy()
 
-        # --- Map: must exclude Unknown/Missing (invalid country names)
+        # Map (drop Unknown/Missing)
         s = base[country_col].astype("string").str.strip()
         s_norm = s.str.lower()
         mask_unknown = s.isna() | (s == "") | s_norm.isin(UNKNOWN_LIKE)
@@ -499,18 +466,15 @@ with tab2:
             )
             plotly_show(fig, prefix="tab2_geo_map")
 
-        # --- Pareto bar: show Top-K countries (always excludes Unknown) ---
+        # Top-K countries bar
         st.markdown("**Pareto of Countries (Top K)**")
         if df_f.empty:
             st.info("No countries to display for the current filters.")
         else:
             pareto_base = df_f.copy()
-
-            # Exclude only Singapore, case-insensitive
             if exclude_sg:
                 pareto_base = pareto_base[~_norm_str(pareto_base[country_col]).eq("singapore")].copy()
 
-            # Always drop Unknown / Missing
             s_norm = _norm_str(pareto_base[country_col])
             mask_unknown = pareto_base[country_col].isna() | s_norm.isin(UNKNOWN_LIKE)
             s = pareto_base.loc[~mask_unknown, country_col]
@@ -519,17 +483,11 @@ with tab2:
                 st.info("No valid countries to display for the current filters.")
                 st.stop()
 
-            # Counts for the FULL shown universe (after SG filter, Unknown removed)
             counts_df = s.value_counts(dropna=False).reset_index()
             counts_df.columns = [country_col, "Participants"]
-
-            # This is the denominator for percentages and for the "Top K countries account for ..." note
             total_universe = int(counts_df["Participants"].sum())
 
-            # Top-K slice (non-Unknown by construction)
             final_df = counts_df.nlargest(int(top_k), "Participants").copy()
-
-            # Percent labels and caption share are relative to the FULL shown universe
             final_df["Share_%"] = (final_df["Participants"] / total_universe * 100.0) if total_universe > 0 else 0.0
 
             fig_bar = px.bar(
@@ -549,9 +507,7 @@ with tab2:
                 f"Top {int(top_k)} countries account for {final_df['Share_%'].sum():.1f}% of the shown total."
             )
 
-
-
-# --- Tab 3: Programmes × Country (both heatmaps share one %/raw toggle) ---
+# Tab 3: Programmes × Country (two heatmaps share the same %/raw toggle)
 with tab3:
     st.subheader("Top Programmes & Country Breakdown")
 
@@ -559,32 +515,19 @@ with tab3:
     country_col = "Country Of Residence"
 
     if (prog_col in df_f.columns) and (country_col in df_f.columns):
-        # DQ note only (no checkbox)
         dq_note_only(df_f, country_col, "Country (Heatmaps)")
+        st.caption("Rows are ordered by total participants after filtering (Unknown removed; Singapore excluded if selected).")
 
-        # Explain ordering logic (applies to both heatmaps)
-        st.caption("Rows in both heatmaps are ordered by total participants after filtering (Unknown removed; Singapore excluded if selected).")
+        exclude_sg_tab3 = st.checkbox("Exclude Singapore (reduce skew)", value=False, key="pc_exclude_sg")
+        show_pct_tab3 = st.toggle("Show % (vs raw counts)", value=True, key="tab3_show_pct")
 
-        # Shared controls for both heatmaps
-        exclude_sg_tab3 = st.checkbox(
-            "Exclude Singapore (reduce skew)", value=False, key="pc_exclude_sg"
-        )
-        show_pct_tab3 = st.toggle(
-            "Show % (vs raw counts)", value=True, key="tab3_show_pct"
-        )
-
-        # Base (apply SG exclusion consistently for both HMs)
         base = df_f.copy()
         if exclude_sg_tab3:
             norm_cty = base[country_col].astype("string").str.strip().str.casefold()
             base = base.loc[~norm_cty.eq("singapore")].copy()
 
-        # -------------------------------
         # Heatmap 1: Programme × Country
-        # -------------------------------
         st.markdown("### Heatmap 1 — Programme × Country")
-
-        # Remove Unknown/Missing countries for interpretability
         s = base[country_col].astype("string").str.strip()
         s_norm = s.str.lower()
         mask_unknown = s.isna() | (s == "") | s_norm.isin(UNKNOWN_LIKE)
@@ -593,39 +536,15 @@ with tab3:
         if base_hm1.empty:
             st.info("No valid Country data for Heatmap 1 after filtering.")
         else:
-            # Limit rows/cols to Top-K by volume after filtering
-            top_progs = (
-                base_hm1[prog_col].value_counts()
-                .nlargest(int(top_k))
-                .index
-                .tolist()
-            )
-            agg = (
-                base_hm1[base_hm1[prog_col].isin(top_progs)]
-                .groupby([prog_col, country_col])
-                .size()
-                .reset_index(name="Participants")
-            )
-            top_countries = (
-                agg.groupby(country_col)["Participants"].sum()
-                .nlargest(int(top_k))
-                .index
-                .tolist()
-            )
+            top_progs = base_hm1[prog_col].value_counts().nlargest(int(top_k)).index.tolist()
+            agg = (base_hm1[base_hm1[prog_col].isin(top_progs)]
+                   .groupby([prog_col, country_col]).size().reset_index(name="Participants"))
+            top_countries = agg.groupby(country_col)["Participants"].sum().nlargest(int(top_k)).index.tolist()
             agg = agg[agg[country_col].isin(top_countries)]
 
-            # Pivot to matrix
-            hm1_counts = (
-                agg.pivot(index=prog_col, columns=country_col, values="Participants")
-                .fillna(0)
-            )
+            hm1_counts = agg.pivot(index=prog_col, columns=country_col, values="Participants").fillna(0)
+            hm1_counts = hm1_counts.loc[hm1_counts.sum(axis=1).sort_values(ascending=False).index]
 
-            # Order rows by total participants (desc) AFTER filtering
-            hm1_counts = hm1_counts.loc[
-                hm1_counts.sum(axis=1).sort_values(ascending=False).index
-            ]
-
-            # Choose matrix + labels + hover per mode
             if show_pct_tab3:
                 total_sum = hm1_counts.values.sum()
                 hm1_pct = (hm1_counts / total_sum * 100).round(2) if total_sum > 0 else hm1_counts * 0
@@ -634,49 +553,30 @@ with tab3:
                 color_label = "Share of total (%)"
                 title_suffix = "(% of total)"
                 text_fmt = ".2f"
-                hover_tmpl = (
-                    "Programme: %{y}<br>"
-                    "Country: %{x}<br>"
-                    "Share of total: %{z:.2f}%"
-                    "<extra></extra>"
-                )
+                hover_tmpl = "Programme: %{y}<br>Country: %{x}<br>Share of total: %{z:.2f}%<extra></extra>"
             else:
                 Z = hm1_counts.values
                 x_labels, y_labels = hm1_counts.columns, hm1_counts.index
                 color_label = "Participants"
                 title_suffix = "(raw)"
                 text_fmt = "d"
-                hover_tmpl = (
-                    "Programme: %{y}<br>"
-                    "Country: %{x}<br>"
-                    "Participants: %{z:.0f}"
-                    "<extra></extra>"
-                )
+                hover_tmpl = "Programme: %{y}<br>Country: %{x}<br>Participants: %{z:.0f}<extra></extra>"
 
             fig_hm1 = px.imshow(
-                Z,
-                x=x_labels,
-                y=y_labels,
-                color_continuous_scale="Viridis",
-                aspect="auto",
+                Z, x=x_labels, y=y_labels, color_continuous_scale="Viridis", aspect="auto",
                 labels=dict(x="Country Of Residence", y="Programme", color=color_label),
-                text_auto=text_fmt,
-                title=f"Programme × Country {title_suffix}",
+                text_auto=text_fmt, title=f"Programme × Country {title_suffix}",
             )
             fig_hm1.update_traces(hovertemplate=hover_tmpl)
             fig_hm1.update_layout(xaxis_title="Country Of Residence", yaxis_title="Programme (Anon)")
             plotly_show(fig_hm1, prefix="tab3_prog_country_heatmap")
 
-        # -------------------------------------------------------------
-        # Heatmap 2: Top Countries × Primary Category (row % or raw)
-        # -------------------------------------------------------------
+        # Heatmap 2: Top Countries × Primary Category
         st.markdown(f"### Heatmap 2 — Top {top_k} Countries × Primary Category")
-
         cat_col = "Primary Category"
         if cat_col not in df_f.columns:
             st.info("‘Primary Category’ column not found for Heatmap 2.")
         else:
-            # Remove Unknown/Missing countries; SG already excluded via base
             s2 = base[country_col].astype("string").str.strip()
             s2_norm = s2.str.lower()
             mask_unknown2 = s2.isna() | (s2 == "") | s2_norm.isin(UNKNOWN_LIKE)
@@ -685,35 +585,14 @@ with tab3:
             if base_hm2.empty:
                 st.info("No valid Country data for Heatmap 2 after filtering.")
             else:
-                # Pick Top-K countries by total participants AFTER filtering
-                top_countries_hm2 = (
-                    base_hm2[country_col].value_counts()
-                    .nlargest(int(top_k))
-                    .index
-                    .tolist()
-                )
+                top_countries_hm2 = base_hm2[country_col].value_counts().nlargest(int(top_k)).index.tolist()
                 df_top_cty = base_hm2[base_hm2[country_col].isin(top_countries_hm2)].copy()
 
-                # Build counts matrix: rows=Country, cols=Primary Category
-                agg_cat = (
-                    df_top_cty
-                    .groupby([country_col, cat_col])
-                    .size()
-                    .reset_index(name="Participants")
-                )
-                hm2_counts = (
-                    agg_cat
-                    .pivot(index=country_col, columns=cat_col, values="Participants")
-                    .fillna(0)
-                )
-
-                # Order rows by total participants (desc) AFTER filtering
-                hm2_counts = hm2_counts.loc[
-                    hm2_counts.sum(axis=1).sort_values(ascending=False).index
-                ]
+                agg_cat = df_top_cty.groupby([country_col, cat_col]).size().reset_index(name="Participants")
+                hm2_counts = agg_cat.pivot(index=country_col, columns=cat_col, values="Participants").fillna(0)
+                hm2_counts = hm2_counts.loc[hm2_counts.sum(axis=1).sort_values(ascending=False).index]
 
                 if show_pct_tab3:
-                    # Row % version (each row sums to 100)
                     row_sums = hm2_counts.sum(axis=1).replace(0, np.nan)
                     hm2_pct = (hm2_counts.div(row_sums, axis=0) * 100).round(2).fillna(0)
                     Z2 = hm2_pct.values
@@ -721,74 +600,45 @@ with tab3:
                     color_label2 = "Row %"
                     title_suffix2 = "(row %)"
                     text_fmt2 = ".2f"
-                    hover_tmpl2 = (
-                        "Country: %{y}<br>"
-                        "Primary Category: %{x}<br>"
-                        "Row share: %{z:.2f}%"
-                        "<extra></extra>"
-                    )
+                    hover_tmpl2 = "Country: %{y}<br>Primary Category: %{x}<br>Row share: %{z:.2f}%<extra></extra>"
                 else:
                     Z2 = hm2_counts.values
                     x2, y2 = hm2_counts.columns, hm2_counts.index
                     color_label2 = "Participants"
                     title_suffix2 = "(raw)"
                     text_fmt2 = "d"
-                    hover_tmpl2 = (
-                        "Country: %{y}<br>"
-                        "Primary Category: %{x}<br>"
-                        "Participants: %{z:.0f}"
-                        "<extra></extra>"
-                    )
+                    hover_tmpl2 = "Country: %{y}<br>Primary Category: %{x}<br>Participants: %{z:.0f}<extra></extra>"
 
                 fig_cat = px.imshow(
-                    Z2,
-                    x=x2,
-                    y=y2,
-                    color_continuous_scale="Viridis",
-                    aspect="auto",
+                    Z2, x=x2, y=y2, color_continuous_scale="Viridis", aspect="auto",
                     labels=dict(x="Primary Category", y="Country Of Residence", color=color_label2),
-                    text_auto=text_fmt2,
-                    title=f"For each country: distribution {title_suffix2}",
+                    text_auto=text_fmt2, title=f"For each country: distribution {title_suffix2}",
                 )
                 fig_cat.update_traces(hovertemplate=hover_tmpl2)
                 fig_cat.update_layout(xaxis_title="Primary Category", yaxis_title="Country Of Residence")
                 plotly_show(fig_cat, prefix="tab3_country_primarycat_heatmap")
     else:
-        st.info("Required columns not found: ensure ‘Truncated Programme Name’ and ‘Country Of Residence’ exist in the dataset.")
+        st.info("Required columns not found: please ensure ‘Truncated Programme Name’ and ‘Country Of Residence’ are present.")
 
-# --- Tab 4: Titles & Organisations
+# Tab 4: Titles & Organisations
 with tab4:
     st.subheader("Top Job Titles & Organisations")
 
-    if "Job Title Clean" in df_f.columns:
-        df_title = add_unknown_checkbox_and_note(
-            df_f, "Job Title Clean", label="Job Title", key="job_title_tab4", note_style="caption"
-        )
-
-        # When Unknowns are included, coalesce blank/variants into literal "Unknown"
+    if "Job Title" in df_f.columns:
+        df_title = add_unknown_checkbox_and_note(df_f, "Job Title Clean", label="Job Title", key="job_title_tab4", note_style="caption")
         s_titles = df_title["Job Title Clean"]
         if "Unknown" in df_title["Job Title Clean"].astype("string").str.lower().unique() or df_title["Job Title Clean"].isna().any():
             s_titles = coalesce_unknown(s_titles)
 
-        top_titles = (
-            s_titles.value_counts(dropna=False)
-            .head(top_k)
-            .reset_index()
-        )
+        top_titles = s_titles.value_counts(dropna=False).head(top_k).reset_index()
         top_titles.columns = ["Job Title", "Participants"]
 
         safe_plot(
             top_titles,
-            lambda: plotly_show(
-                px.bar(
-                    top_titles, x="Participants", y="Job Title",
-                    orientation="h", title=f"Top {top_k} Job Titles"
-                ),
-                prefix="tab4_top_titles"
-            )
+            lambda: plotly_show(px.bar(top_titles, x="Participants", y="Job Title", orientation="h", title=f"Top {top_k} Job Titles"), prefix="tab4_top_titles")
         )
 
-    org_col = "Organisation Name: Organisation Name"
+    org_col = "Organisation Name"
     if org_col in df_f.columns:
         df_org = add_unknown_checkbox_and_note(df_f, org_col, label="Organisation", key="orgs", note_style="caption")
         top_orgs = df_org[org_col].value_counts().nlargest(top_k).reset_index()
@@ -796,54 +646,26 @@ with tab4:
         safe_plot(top_orgs, lambda: plotly_show(px.bar(top_orgs, x="Participants", y="Organisation", orientation="h", title=f"Top {top_k} Organisations"), prefix="tab4_top_orgs", theme="streamlit"))
 
     if "Domain" in df_f.columns:
-        df_dom = add_unknown_checkbox_and_note(
-            df_f,
-            "Domain",
-            label="Domain",
-            key="domain_tab4",         
-            note_style="caption"
-        )
+        df_dom = add_unknown_checkbox_and_note(df_f, "Domain", label="Domain", key="domain_tab4", note_style="caption")
 
-        # Read the checkbox state that add_unknown_checkbox_and_note created
         include_unknown_domain = bool(st.session_state.get("domain_tab4", False))
 
-        # If the checkbox is UNCHECKED, also hide literal "Others"
-        # 'Others' which is a valid classified category based on BERTopic results will be included in the 'Valid' count.
+        # Hide “Others” by default for clearer insights
         if not include_unknown_domain:
-            mask_others = (
-                df_dom["Domain"].astype("string").str.strip().str.lower() == "others"
-            )
+            mask_others = (df_dom["Domain"].astype("string").str.strip().str.lower() == "others")
             df_dom = df_dom.loc[~mask_others].copy()
 
-        # Now compute the chart from the (optionally) trimmed df_dom
-        top_domains = (
-            df_dom["Domain"]
-            .value_counts(dropna=False)
-            .nlargest(int(top_k))
-            .reset_index()
-        )
+        top_domains = df_dom["Domain"].value_counts(dropna=False).nlargest(int(top_k)).reset_index()
         top_domains.columns = ["Domain", "Participants"]
 
-        # Additional data-quality clarity note for Domain
         st.caption(
-            "Note: **'Others'** is a valid derived category from clustering — "
-            "it is hidden by default for clearer insights, but **still counted as valid data** "
-            "in the data quality stats above."
+            "Note: **'Others'** is a valid cluster label from topic modeling. It's hidden by default for clarity "
+            "but still counted as valid data in the note above."
         )
 
     safe_plot(
         top_domains,
-        lambda: plotly_show(
-            px.bar(
-                top_domains,
-                x="Participants",
-                y="Domain",
-                orientation="h",
-                title=f"Top {int(top_k)} Domains",
-            ),
-            prefix="tab4_top_domains",
-            theme="streamlit",
-        ),
+        lambda: plotly_show(px.bar(top_domains, x="Participants", y="Domain", orientation="h", title=f"Top {int(top_k)} Domains"), prefix="tab4_top_domains", theme="streamlit"),
     )
 
     if "Seniority" in df_f.columns:
@@ -851,48 +673,26 @@ with tab4:
         sen = df_sen["Seniority"].value_counts().reset_index()
         sen.columns = ["Seniority", "Participants"]
         safe_plot(sen, lambda: plotly_show(px.bar(sen, x="Seniority", y="Participants", title="Participants by Seniority"), prefix="tab4_seniority"))
-    
-    
 
-# --- Tab 5: Age & Demographics
+# Tab 5: Age & Demographics
 with tab5:
     st.subheader("Demographics")
 
     if "Age_Group" in df_f.columns:
-        # This renders the checkbox + DQ note and returns the filtered df
-        df_age = add_unknown_checkbox_and_note(
-            df_f, "Age_Group", label="Age Group", key="agegroup_tab5", note_style="caption"
-        )
-
-        # Read the checkbox state without modifying the helper
+        df_age = add_unknown_checkbox_and_note(df_f, "Age_Group", label="Age Group", key="agegroup_tab5", note_style="caption")
         include_unknown_age = bool(st.session_state.get("agegroup_tab5", False))
-
         s_raw = df_age["Age_Group"].astype("string")
 
         if include_unknown_age:
-            # Merge any blanks/NA/unknown-like into literal "Unknown"
             s = coalesce_unknown(s_raw)
             order = ["<35", "35–44", "45–54", "55–64", "65+", "Unknown"]
         else:
-            # Ensure Unknown never appears when checkbox is OFF
             s = s_raw[s_raw.ne("Unknown")]
             order = ["<35", "35–44", "45–54", "55–64", "65+"]
 
-        agec = (
-            s.value_counts(dropna=False)
-             .reindex(order)
-             .fillna(0)
-             .rename_axis("Age Group")
-             .reset_index(name="Participants")
-        )
+        agec = (s.value_counts(dropna=False).reindex(order).fillna(0).rename_axis("Age Group").reset_index(name="Participants"))
 
-        safe_plot(
-            agec,
-            lambda: plotly_show(
-                px.bar(agec, x="Age Group", y="Participants", title="Participants by Age Group"),
-                prefix="tab5_agegroup_bar"
-            )
-        )
+        safe_plot(agec, lambda: plotly_show(px.bar(agec, x="Age Group", y="Participants", title="Participants by Age Group"), prefix="tab5_agegroup_bar"))
 
     if "Gender" in df_f.columns:
         df_gender = add_unknown_checkbox_and_note(df_f, "Gender", key="gender_tab5", note_style="caption")
@@ -900,95 +700,55 @@ with tab5:
         gender.columns = ["Gender", "Participants"]
         safe_plot(gender, lambda: plotly_show(px.pie(gender, names="Gender", values="Participants", title="Gender Split"), prefix="tab5_gender_pie"))
 
-# --- Tab 6: Category Insights
+# Tab 6: Category Insights
 with tab_6:
     st.subheader("Category Insights")
     sub_age, sub_country = st.tabs(["📊 Age Distribution per Category", "🌍 Country Distribution per Category"])
 
     with sub_age:
         st.markdown("##### Age Distribution per Category")
-        cat_type = st.radio(
-            "Choose category type:",
-            ["Primary Category", "Secondary Category"],
-            key="age_cat_type",
-            horizontal=True
-        )
+        cat_type = st.radio("Choose category type:", ["Primary Category", "Secondary Category"], key="age_cat_type", horizontal=True)
         cat_col = cat_type
 
         if (cat_col in df_f.columns) and ("Age_Group" in df_f.columns):
-            cat_values = (
-                df_f[cat_col].astype("string").fillna("Unknown").replace({"": "Unknown"}).unique().tolist()
-            )
-            # Put Unknown last
-            cat_values = [v for v in sorted(cat_values) if v != "Unknown"] + (
-                ["Unknown"] if "Unknown" in cat_values else []
-            )
+            cat_values = df_f[cat_col].astype("string").fillna("Unknown").replace({"": "Unknown"}).unique().tolist()
+            cat_values = [v for v in sorted(cat_values) if v != "Unknown"] + (["Unknown"] if "Unknown" in cat_values else [])
             selected_cat = st.selectbox(f"Select {cat_type}:", cat_values, key="age_cat_select")
 
             subset = df_f[df_f[cat_col].astype("string").fillna("Unknown") == selected_cat].copy()
             if subset.empty:
                 st.info("No rows for this selection.")
             else:
-                # Checkbox + DQ note for Age Group in this selection
-                sub_age_df = add_unknown_checkbox_and_note(
-                    subset, "Age_Group", label="Age Group (this selection)",
-                    key="age_dist_sub", note_style="caption"
-                )
-
-                # Coalesce Unknown-like + Missing -> "Unknown" BEFORE counting
+                sub_age_df = add_unknown_checkbox_and_note(subset, "Age_Group", label="Age Group (this selection)", key="age_dist_sub", note_style="caption")
                 s = coalesce_unknown(sub_age_df["Age_Group"])
-
-                # Build % distribution
                 dist = (s.value_counts(normalize=True, dropna=False) * 100.0).reset_index()
                 dist.columns = ["Age Group", "Percentage"]
 
-                # Order buckets; keep Unknown last when present
                 order_full = ["<35", "35–44", "45–54", "55–64", "65+", "Unknown"]
-                # Only keep groups that exist after filtering
                 present = [g for g in order_full if g in dist["Age Group"].values]
                 dist = dist.set_index("Age Group").reindex(present).reset_index()
 
-                # Guard against empty after filtering
                 if dist.empty:
                     st.info("No Age Group data to display for this selection.")
                 else:
                     text_labels = dist["Percentage"].round(1).astype(str) + "%"
-                    fig = px.bar(
-                        dist,
-                        x="Age Group",
-                        y="Percentage",
-                        title=f"Age Distribution (%) – {cat_type}: {selected_cat}",
-                        text=text_labels,
-                    )
+                    fig = px.bar(dist, x="Age Group", y="Percentage", title=f"Age Distribution (%) – {cat_type}: {selected_cat}", text=text_labels)
                     fig.update_traces(textposition="outside", cliponaxis=False)
                     ymax = min(100.0, float(dist["Percentage"].max()) + 10.0)
                     fig.update_layout(yaxis_range=[0, ymax])
                     plotly_show(fig, prefix="tab6_age_dist_by_cat")
         else:
-            st.info("Required columns not found: ensure ‘Age_Group’ and the selected category column exist.")
+            st.info("Required columns not found: please include ‘Age_Group’ and the selected category column.")
 
         with sub_country:
             st.markdown("##### Country Distribution per Category")
-
-            cat_type = st.radio(
-                "Choose category type:",
-                ["Primary Category", "Secondary Category"],
-                key="country_cat_type",
-                horizontal=True
-            )
+            cat_type = st.radio("Choose category type:", ["Primary Category", "Secondary Category"], key="country_cat_type", horizontal=True)
             cat_col = cat_type
             country_col = "Country Of Residence"
-
-            # Exclude SG toggle (same behavior as Tab 2 Pareto)
-            exclude_sg_tab6 = st.checkbox(
-                "Exclude Singapore (reduce skew)", value=False, key="tab6_exclude_sg"
-            )
+            exclude_sg_tab6 = st.checkbox("Exclude Singapore (reduce skew)", value=False, key="tab6_exclude_sg")
 
             if (cat_col in df_f.columns) and (country_col in df_f.columns):
-                # Category selector (keep Unknown at the end, just like elsewhere)
-                cat_values = (
-                    df_f[cat_col].astype("string").fillna("Unknown").replace({"": "Unknown"}).unique().tolist()
-                )
+                cat_values = df_f[cat_col].astype("string").fillna("Unknown").replace({"": "Unknown"}).unique().tolist()
                 cat_values = [v for v in sorted(cat_values) if v != "Unknown"] + (["Unknown"] if "Unknown" in cat_values else [])
                 selected_cat = st.selectbox(f"Select {cat_type}:", cat_values, key="country_cat_select")
 
@@ -996,14 +756,11 @@ with tab_6:
                 if subset.empty:
                     st.info("No rows for this selection.")
                 else:
-                    # Same DQ note pattern as Tab 2
                     dq_note_only(subset, country_col, "Country (this selection)")
 
-                    # Apply Exclude-SG first, like Tab 2 (case-insensitive)
                     if exclude_sg_tab6:
                         subset = subset[~_norm_str(subset[country_col]).eq("singapore")].copy()
 
-                    # Always drop Unknown/Missing, like Tab 2 Pareto
                     s_norm = _norm_str(subset[country_col])
                     mask_unknown = subset[country_col].isna() | s_norm.isin(UNKNOWN_LIKE)
                     sub_valid = subset.loc[~mask_unknown].copy()
@@ -1011,25 +768,13 @@ with tab_6:
                     if sub_valid.empty:
                         st.info("No valid countries to display after removing Unknown (and Singapore, if excluded).")
                     else:
-                        # Counts over the FULL shown universe (after SG filter, Unknown removed)
                         counts_df = sub_valid[country_col].value_counts(dropna=False).reset_index()
                         counts_df.columns = [country_col, "Participants"]
-
-                        # Denominator for percentages and caption share — same as Tab 2
                         total_universe = int(counts_df["Participants"].sum())
-
-                        # Top-K slice
                         final_df = counts_df.nlargest(int(top_k), "Participants").copy()
                         final_df["Share_%"] = (final_df["Participants"] / total_universe * 100.0) if total_universe > 0 else 0.0
 
-                        # Plot with % labels (same style as Tab 2 Pareto)
-                        fig = px.bar(
-                            final_df,
-                            x=country_col,
-                            y="Participants",
-                            title=f"Top {int(top_k)} Countries by Participants — {cat_type}: {selected_cat}",
-                            text=final_df["Share_%"].round(1).astype(str) + "%",
-                        )
+                        fig = px.bar(final_df, x=country_col, y="Participants", title=f"Top {int(top_k)} Countries by Participants — {cat_type}: {selected_cat}", text=final_df["Share_%"].round(1).astype(str) + "%")
                         fig.update_traces(textposition="outside", cliponaxis=False)
                         fig.update_layout(xaxis_tickangle=-45, yaxis_title="Participants", xaxis_title="Country")
                         plotly_show(fig, prefix="tab6_country_dist_by_cat_like_tab2")
@@ -1040,22 +785,21 @@ with tab_6:
                             f"Top {int(top_k)} countries account for {final_df['Share_%'].sum():.1f}% of the shown total."
                         )
             else:
-                st.info("Required columns not found: make sure ‘Country Of Residence’ and category columns exist in the dataset.")
+                st.info("Required columns not found: please include ‘Country Of Residence’ and the chosen category column.")
 
-# --- Tab 7: Programme Cost
+# Tab 7: Programme Cost
 with tab_7:
     st.subheader("Programme Cost Analysis")
-
     required_cols = ["Programme Cost", "Truncated Programme Name", "Run_Month"]
     if not all(col in df_f.columns for col in required_cols):
-        st.warning("The required columns ('Programme Cost', 'Truncated Programme Name', 'Run_Month') are not available in the data.")
+        st.warning("Missing columns: ‘Programme Cost’, ‘Truncated Programme Name’, or ‘Run_Month’.")
     else:
         df_cost = df_f.copy()
         df_cost['Programme Cost'] = pd.to_numeric(df_cost['Programme Cost'], errors='coerce')
         df_cost.dropna(subset=['Programme Cost'], inplace=True)
 
         if df_cost.empty:
-            st.info("No data with valid programme costs found for the current filters.")
+            st.info("No rows with valid programme costs for the current filters.")
         else:
             st.markdown("##### Enrolment Volume vs. Programme Cost")
             grouped = df_cost.groupby('Truncated Programme Name').agg(
@@ -1087,33 +831,20 @@ with tab_7:
 
             st.divider()
             st.markdown("##### Top K Countries by Total Revenue")
-
             if "Country Of Residence" in df_cost.columns:
-                top_countries = (
-                    df_cost.groupby("Country Of Residence")["Programme Cost"]
-                    .sum()
-                    .nlargest(top_k)
-                    .reset_index()
-                )
+                top_countries = df_cost.groupby("Country Of Residence")["Programme Cost"].sum().nlargest(top_k).reset_index()
                 top_countries.columns = ["Country Of Residence", "Total Revenue"]
+                fig2 = px.bar(top_countries, x="Total Revenue", y="Country Of Residence", orientation="h", title=f"Top {top_k} Countries by Total Revenue")
+                st.plotly_chart(fig2, use_container_width=True, theme="streamlit")
 
-                fig2 = px.bar(
-                    top_countries,
-                    x="Total Revenue",
-                    y="Country Of Residence",
-                    orientation="h",
-                    title=f"Top {top_k} Countries by Total Revenue" 
-                )
-                st.plotly_chart(fig2, use_container_width=True, theme="streamlit") 
-
-# --- Tab 8: Programme Deep Dive
+# Tab 8: Programme Deep Dive
 with tab_8:
     st.subheader("Programme Deep Dive")
     include_unknown_deep = st.checkbox("Include 'Unknown' in Deep Dive visuals", value=False, key="dd_include_unknown")
 
     prog_col = "Truncated Programme Name"
     if prog_col not in df_f.columns:
-        st.info("Programme column not found in the filtered data.")
+        st.info("Programme column not found.")
         st.stop()
 
     progs = (df_f[prog_col].dropna().astype(str).sort_values().unique().tolist()) if not df_f.empty else []
@@ -1138,6 +869,7 @@ with tab_8:
         st.metric("Median Age", f"{p['Age'].median():.0f}" if "Age" in p.columns and p["Age"].notna().any() else "—")
     with c5:
         st.metric("Cost", p["Programme Cost"].unique() if p["Programme Cost"].notna().any() else "Unknown")
+
     date_min = pd.to_datetime(p.get("Programme Start Date")).min() if "Programme Start Date" in p.columns else pd.NaT
     date_max = pd.to_datetime(p.get("Programme End Date")).max() if "Programme End Date" in p.columns else pd.NaT
     if pd.notna(date_min) and pd.notna(date_max):
@@ -1194,7 +926,7 @@ with tab_8:
 
                 safe_plot(ctry_top, lambda: plotly_show(px.bar(ctry_top, x="Participants", y="Country", orientation="h", title=f"Top {top_k} Countries (Participants)"), prefix="tab8_top_countries"))
 
-        org_col = "Organisation Name: Organisation Name"
+        org_col = "Organisation Name"
         if org_col in p.columns:
             p_org = filter_unknown_no_ui(p, org_col, include_unknown_deep)
             dq_caption(p, org_col, "Organisation")
@@ -1214,43 +946,23 @@ with tab_8:
 
     with colB:
         if "Age_Group" in p.columns:
-            # Apply Unknown filter based on deep dive toggle
             p_age = filter_unknown_no_ui(p, "Age_Group", include_unknown_deep)
             dq_caption(p, "Age_Group", "Age Group")
-
             s = p_age["Age_Group"].astype("string")
-
-            # If include_unknown is ON, merge Unknown-like → "Unknown"
             if include_unknown_deep:
                 s = coalesce_unknown(s)
-
-            # Build counts after filtering
             age_counts = s.value_counts(dropna=False)
 
-            # Define ordering and respect filtered set
             order_full = ["<35","35–44","45–54","55–64","65+","Unknown"]
             present = [g for g in order_full if g in age_counts.index]
 
             if not present:
                 st.info("No Age Group data to display for this programme.")
             else:
-                age_df = (
-                    age_counts.reindex(present)
-                    .fillna(0)
-                    .rename_axis("Age Group")
-                    .reset_index(name="Participants")
-                )
-
-                fig = px.bar(
-                    age_df,
-                    x="Age Group",
-                    y="Participants",
-                    title="Age Group Distribution",
-                    text="Participants"
-                )
+                age_df = (age_counts.reindex(present).fillna(0).rename_axis("Age Group").reset_index(name="Participants"))
+                fig = px.bar(age_df, x="Age Group", y="Participants", title="Age Group Distribution", text="Participants")
                 fig.update_traces(textposition="outside", cliponaxis=False)
                 plotly_show(fig, prefix="tab8_agegroup")
-
 
     st.markdown("##### Runs for this Programme")
     run_cols = [c for c in ["Truncated Programme Run", "Programme Start Date", "Programme End Date", "Country Of Residence", "Application Status"] if c in p.columns]
@@ -1263,12 +975,12 @@ with tab_8:
         mime="text/csv"
     )
 
-# --- Tab 9: Data Preview
+# Tab 9: Data Preview
 with tab_9:
     st.subheader("Filtered Data Preview")
     preview_cols = [c for c in [
         "Application ID", "Contact ID", "Application Status", "Applicant Type",
-        "Organisation Name: Organisation Name", "Job Title Clean", "Seniority",
+        "Organisation Name", "Job Title Clean", "Seniority",
         "Truncated Programme Name", "Truncated Programme Run", "Primary Category", "Secondary Category",
         "Programme Start Date", "Programme End Date", "Run_Month", "Run_Month_Label",
         "Gender", "Age", "Country Of Residence", "Domain", "Programme Cost"
