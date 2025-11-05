@@ -166,6 +166,7 @@ cython_debug/
 # --- Data files ---
 *.csv
 *.xlsx
+*.xlsm
 *.xls
 *.parquet
 *.json
