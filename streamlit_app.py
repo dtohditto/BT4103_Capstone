@@ -51,9 +51,9 @@ st.sidebar.header("Data")
 
 st.sidebar.info(
     "**Use ONE of the two paths:**\n\n"
-    "1) **Path A – Already curated CSV**: Upload the curated CSV directly (no need to click *Run curation*).\n"
+    "1) **Path A – Already curated CSV**: Upload the curated CSV directly below (no need to click **Run curation**).\n"
     "2) **Path B – Raw files**: Upload the **Programme** file and the **Cost** file, then click **Run curation**.\n"
-    "   After it finishes, you can also download the curated CSV."
+    "   When curation completes, **download the curated CSV and then upload it** in the **Curated CSV** section below."
 )
 
 # ---- Path B: raw uploads first ----
@@ -93,6 +93,9 @@ if run:
 
 # Curated download (if curation just ran)
 if csv_bytes is not None:
+    st.sidebar.success(
+        "Curation complete. **Step 2:** Download the curated CSV **and then upload it** under **Path A → Curated CSV** below."
+    )
     st.sidebar.download_button(
         "💾 Download curated CSV",
         data=csv_bytes,
@@ -101,7 +104,10 @@ if csv_bytes is not None:
         use_container_width=True,
     )
 else:
-    st.sidebar.caption("After curation completes, a download button will appear here.")
+    st.sidebar.caption(
+        "After curation completes, a download button will appear here. "
+        "Then **upload the curated CSV** under **Path A** below."
+    )
 
 st.sidebar.divider()
 
@@ -116,10 +122,15 @@ data_src = None
 if uploaded_curated is not None:
     data_src = uploaded_curated          # Path A takes priority if provided
 elif isinstance(df_curated, pd.DataFrame):
-    data_src = df_curated                # Otherwise use freshly curated data (Path B)
+    # You can keep this to allow immediate use without re-upload,
+    # or remove it if you want to *force* re-upload after download.
+    data_src = df_curated
 
 if data_src is None:
-    st.info("**No data loaded.** Use **Path A** (upload a curated CSV) **or** use **Path B** (upload Programme & Cost, then click **Run curation**).")
+    st.info(
+        "**No data loaded.** Use **Path A** (upload a curated CSV) **or** use **Path B** "
+        "(upload Programme & Cost, click **Run curation**, **download the curated CSV, then upload it** under **Curated CSV**)."
+    )
     st.stop()
 
 # Load & parse once
