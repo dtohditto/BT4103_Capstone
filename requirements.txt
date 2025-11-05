@@ -6,5 +6,4 @@ seaborn
 openpyxl
 bertopic
 sentence-transformers
-umap
 hdbscan
