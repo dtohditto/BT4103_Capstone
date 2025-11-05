@@ -46,34 +46,40 @@ def load_data(src) -> pd.DataFrame:
     return df
 
 
-# --- Uploads & curation gate ---
+# --- Uploads & curation gate (reordered + clearer UX) ---
 st.sidebar.header("Data")
-new_uploaded_programme = st.sidebar.file_uploader(
-    "Upload a new programme CSV/Excel (optional)", type=["csv", "xlsx", "xlsm", "xls"]
-)
-new_uploaded_cost = st.sidebar.file_uploader(
-    "Upload a new cost CSV/Excel (optional)", type=["csv", "xlsx", "xlsm", "xls"]
-)
-uploaded_curated = st.sidebar.file_uploader(
-    "Or upload an already-curated CSV", type=["csv"]
+
+st.sidebar.info(
+    "**Use ONE of the two paths:**\n\n"
+    "1) **Path A – Already curated CSV**: Upload the curated CSV directly (no need to click *Run curation*).\n"
+    "2) **Path B – Raw files**: Upload the **Programme** file and the **Cost** file, then click **Run curation**.\n"
+    "   After it finishes, you can also download the curated CSV."
 )
 
-run = st.sidebar.button("Run curation")
+# ---- Path B: raw uploads first ----
+st.sidebar.subheader("Path B — Upload raw files")
+new_uploaded_programme = st.sidebar.file_uploader(
+    "Programme file (CSV/XLSX/XLSM/XLS)", type=["csv", "xlsx", "xlsm", "xls"], key="prog_upload"
+)
+new_uploaded_cost = st.sidebar.file_uploader(
+    "Cost file (CSV/XLSX/XLSM/XLS)", type=["csv", "xlsx", "xlsm", "xls"], key="cost_upload"
+)
+
+# Run curation button (placed BEFORE the curated-CSV uploader)
+run = st.sidebar.button("▶️ Run curation", use_container_width=True)
 
 df_curated = None
 csv_bytes = None
 
-# Only run curation when user clicks
 if run:
-    if not new_uploaded_programme and not new_uploaded_cost:
-        st.sidebar.error("Please upload at least one file to run curation.")
+    if not new_uploaded_programme or not new_uploaded_cost:
+        st.sidebar.error("Please upload **both** Programme **and** Cost files before running curation.")
     else:
-        # Call your curation; it should accept UploadedFile objects
         res = CSVCuration.curate_programme_and_cost_data(
             new_uploaded_programme, new_uploaded_cost, return_csv_bytes=True
         )
         if res is None:
-            st.sidebar.warning("No curated output produced. Check your inputs.")
+            st.sidebar.warning("No curated output produced. Please check your inputs.")
         elif isinstance(res, tuple):
             df_curated, csv_bytes = res
         elif isinstance(res, (bytes, bytearray)):
@@ -85,26 +91,35 @@ if run:
             except Exception:
                 csv_bytes = None
 
-# Download curated CSV if available
+# Curated download (if curation just ran)
 if csv_bytes is not None:
     st.sidebar.download_button(
-        "Download curated CSV",
+        "💾 Download curated CSV",
         data=csv_bytes,
         file_name="dashboard_curated.csv",
         mime="text/csv",
+        use_container_width=True,
     )
 else:
-    st.sidebar.info("Upload files and click **Run curation**, or upload a curated CSV.")
+    st.sidebar.caption("After curation completes, a download button will appear here.")
+
+st.sidebar.divider()
+
+# ---- Path A: curated CSV upload AFTER the run button ----
+st.sidebar.subheader("Path A — Or upload a curated CSV")
+uploaded_curated = st.sidebar.file_uploader(
+    "Curated CSV", type=["csv"], key="curated_upload"
+)
 
 # Decide the data source for the dashboard (NO local fallback)
 data_src = None
 if uploaded_curated is not None:
-    data_src = uploaded_curated          # file-like (preferred if provided)
+    data_src = uploaded_curated          # Path A takes priority if provided
 elif isinstance(df_curated, pd.DataFrame):
-    data_src = df_curated                # DataFrame from curation
+    data_src = df_curated                # Otherwise use freshly curated data (Path B)
 
 if data_src is None:
-    st.info("No data loaded. Upload a curated CSV, or upload raw files and click **Run curation**.")
+    st.info("**No data loaded.** Use **Path A** (upload a curated CSV) **or** use **Path B** (upload Programme & Cost, then click **Run curation**).")
     st.stop()
 
 # Load & parse once
