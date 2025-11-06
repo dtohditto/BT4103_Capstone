@@ -1174,6 +1174,9 @@ with st.sidebar:
         "Generate a PDF of all charts based on the active filters. "
         "A download button will appear below."
     )
+
+    if "pdf_bytes" not in st.session_state:
+        st.session_state.pdf_bytes = None
     
     if st.button("Generate PDF Report", key="btn_generate_pdf", use_container_width=True):
         if not charts_for_pdf:
@@ -1187,7 +1190,7 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"An error occurred during PDF generation: {e}")
                     st.session_state.pdf_bytes = None # Clear on failure
-
+                    
     if st.session_state.pdf_bytes:
         st.success("Your PDF report is ready!")
         st.download_button(
