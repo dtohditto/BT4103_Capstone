@@ -19,6 +19,20 @@ import time
 import traceback
 from io import BytesIO
 
+# For Plotly 5 + Kaleido 0.2.x on Streamlit Cloud
+try:
+    pio.kaleido.scope.default_format = "png"
+    pio.kaleido.scope.default_scale = 1
+    pio.kaleido.scope.chromium_args = [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--headless=new",
+    ]
+except Exception as e:
+    st.sidebar.warning(f"Kaleido init warning: {e}")
+
 st.set_page_config(page_title="EE Analytics Dashboard", layout="wide")
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -81,7 +95,7 @@ new_uploaded_cost = st.sidebar.file_uploader(
     "Cost file (CSV/XLSX/XLSM/XLS)", type=["csv", "xlsx", "xlsm", "xls"], key="cost_upload"
 )
 
-run = st.sidebar.button("▶️ Run curation", use_container_width=True)
+run = st.sidebar.button("▶️ Run curation", width='stretch')
 
 df_curated = None
 csv_bytes = None
@@ -116,7 +130,7 @@ if csv_bytes is not None:
         data=csv_bytes,
         file_name="dashboard_curated.csv",
         mime="text/csv",
-        use_container_width=True,
+        width='stretch',
     )
 else:
     st.sidebar.caption(
@@ -302,7 +316,7 @@ def _next_plot_key(prefix: str) -> str:
     return f"{prefix}_{st.session_state['plot_counter']}"
 
 def plotly_show(fig, *, prefix: str, **kwargs):
-    st.plotly_chart(fig, use_container_width=True, key=_next_plot_key(prefix), **kwargs)
+    st.plotly_chart(fig, width='stretch', key=_next_plot_key(prefix), **kwargs)
 
 def safe_plot(check_df: pd.DataFrame, plot_callable):
     if isinstance(check_df, (pd.DataFrame, pd.Series)) and check_df.empty:
@@ -491,6 +505,22 @@ def create_html_report(charts: list[tuple[str, "px.Figure"]]) -> bytes:
     parts.append("</body></html>")
     return "\n".join(parts).encode("utf-8")
 
+def kaleido_ready_msg():
+    import plotly.express as px
+    try:
+        fig = px.line(x=[0,1], y=[0,1], title="kaleido_smoke_test")
+        _ = fig.to_image(format="png", engine="kaleido", width=200, height=120, scale=1)
+        return True, "Kaleido OK"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+ok, msg = kaleido_ready_msg()
+st.caption(f"Image export status: {msg}")
+if not ok:
+    st.warning("PDF export backend is not ready, so the button is disabled.")
+    generate_pdf_enabled = False
+else:
+    generate_pdf_enabled = True
 
 def create_pdf_report(charts: List[Tuple[str, "px.Figure"]]) -> bytes:
     """
@@ -533,7 +563,13 @@ def create_pdf_report(charts: List[Tuple[str, "px.Figure"]]) -> bytes:
         for title, fig in charts:
             try:
                 styled = _style_for_export(fig)
-                img_bytes = _to_png_bytes_with_guard(styled, img_w_px, img_h_px)
+                img_bytes = fig.to_image(
+                            format="png",
+                            engine="kaleido",
+                            width=img_w_px,
+                            height=img_h_px,
+                            scale=1,
+                )
                 img_io = io.BytesIO(img_bytes)
                 pdf.image(img_io, x=img_x_pos, y=img_y_pos, w=img_w_mm, h=img_h_mm)
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
@@ -1309,7 +1345,7 @@ with tab_7:
                 fig2 = px.bar(top_countries, x="Total Revenue", y="Country Of Residence", orientation="h", title=chart_title)
                 
                 charts_for_pdf.append((chart_title, fig2)) # Add to PDF list
-                st.plotly_chart(fig2, use_container_width=True, theme="streamlit")
+                st.plotly_chart(fig2, width='stretch', theme="streamlit")
 
 # Tab 8: Programme Deep Dive
 with tab_8:
@@ -1477,7 +1513,7 @@ with tab_8:
 
                 st.markdown("##### Runs for this Programme")
                 run_cols = [c for c in ["Truncated Programme Run", "Programme Start Date", "Programme End Date", "Country Of Residence", "Application Status"] if c in p.columns]
-                st.dataframe(p.sort_values(["Run_Month","Programme Start Date"]).loc[:, run_cols].head(500), use_container_width=True, hide_index=True)
+                st.dataframe(p.sort_values(["Run_Month","Programme Start Date"]).loc[:, run_cols].head(500), width='stretch', hide_index=True)
 
                 st.download_button(
                     f"Download '{sel_prog}' rows (CSV)",
@@ -1497,7 +1533,7 @@ with tab_9:
         "Gender", "Age", "Country Of Residence", "Domain", "Programme Cost"
     ] if c in df_f.columns]
 
-    st.dataframe(df_f.sort_values("Run_Month").loc[:, preview_cols].head(500), use_container_width=True, hide_index=True)
+    st.dataframe(df_f.sort_values("Run_Month").loc[:, preview_cols].head(500), width='stretch', hide_index=True)
     st.download_button("Download filtered CSV", data=df_f.to_csv(index=False).encode("utf-8-sig"), file_name="filtered_export.csv", mime="text/csv")
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1524,7 +1560,7 @@ with st.sidebar:
     # Disable the button when not ready, to avoid the scary crash banner
     disabled_flag = not ok
 
-    if st.button("Generate PDF Report", key="btn_generate_pdf", use_container_width=True, disabled=disabled_flag):
+    if st.button("Generate PDF Report", key="btn_generate_pdf", width='stretch', disabled=disabled_flag):
         if not charts_for_pdf:
             st.error("No charts were generated. Cannot create PDF.")
             st.session_state.pdf_bytes = None
@@ -1543,7 +1579,7 @@ with st.sidebar:
             data=st.session_state.pdf_bytes,
             file_name="Dashboard_Report.pdf",
             mime="application/pdf",
-            use_container_width=True,
+            width='stretch',
             on_click=lambda: st.session_state.update(pdf_bytes=None)
         )
 
