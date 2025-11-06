@@ -19,10 +19,16 @@ import time
 import traceback
 from io import BytesIO
 
+# Set default export format using the new API if available, else old one.
 try:
-    pio.kaleido.scope.chromium_args = ["--no-sandbox", "--disable-dev-shm-usage"]
+    # New API (Plotly ≥ 5.24): pio.defaults.to_image.* exists
+    pio.defaults.to_image.format = "png"
 except Exception:
-    pass
+    try:
+        # Old path (will be removed after Sep 2025)
+        pio.kaleido.scope.default_format = "png"
+    except Exception:
+        pass
 
 st.set_page_config(page_title="EE Analytics Dashboard", layout="wide")
 
@@ -500,7 +506,7 @@ def kaleido_ready_msg():
     import plotly.express as px
     try:
         fig = px.line(x=[0,1], y=[0,1], title="kaleido_smoke_test")
-        _ = fig.to_image(format="png", engine="kaleido", width=200, height=120, scale=1)
+        _ = fig.to_image(format="png", width=200, height=120, scale=1)
         return True, "Kaleido OK"
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
@@ -516,14 +522,12 @@ else:
 def create_pdf_report(charts: List[Tuple[str, "px.Figure"]]) -> bytes:
     """
     Build a landscape A4 PDF from (title, plotly_fig) tuples.
-    Requires Chrome/Chromium + shared libs for kaleido.
-    - Uses temp files for FPDF.image().
-    - Adds an error page per failed chart (so the PDF is still informative).
-    - Raises if all charts fail so caller can show a clean message.
+    - Requires Kaleido to be functional (Chromium present).
+    - Writes each figure to a temp PNG file, then places it on its own page.
+    - If all charts fail, raises a RuntimeError with a helpful message.
     """
     ok, note = _ensure_plotly_export_ready()
     if not ok:
-        # Be specific about the usual missing-libs fix
         missing_libs_cmd = (
             "sudo apt update && sudo apt-get install -y "
             "libnss3 libatk-bridge2.0-0 libcups2 libxcomposite1 libxdamage1 "
@@ -538,14 +542,18 @@ def create_pdf_report(charts: List[Tuple[str, "px.Figure"]]) -> bytes:
             "Alternatively, use the HTML export option (no Chrome required)."
         )
 
+    from fpdf import FPDF
     pdf = FPDF(orientation="L", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=False)
 
-    page_w_mm, page_h_mm, margin_mm = 297, 210, 10
+    page_w_mm, page_h_mm = 297.0, 210.0
+    margin_mm = 10.0
+    title_h_mm = 12.0
     img_w_mm = page_w_mm - 2 * margin_mm
-    img_h_mm = page_h_mm - 2 * margin_mm - 20  # ~20mm reserved for title
+    img_h_mm = page_h_mm - 2 * margin_mm - title_h_mm
 
-    img_w_px, img_h_px = 1400, 800  # crisp but not huge
+    # Pixels for a crisp render (Kaleido scales nicely)
+    img_w_px, img_h_px = 1600, 900
 
     tmp_paths: List[str] = []
     success = 0
@@ -554,40 +562,42 @@ def create_pdf_report(charts: List[Tuple[str, "px.Figure"]]) -> bytes:
         for title, fig in charts:
             try:
                 styled = _style_for_export(fig)
-                img_bytes = fig.to_image(
-                            format="png",
-                            engine="kaleido",
-                            width=img_w_px,
-                            height=img_h_px,
-                            scale=1,
+                # Export to PNG bytes via Kaleido
+                img_bytes = styled.to_image(
+                    format="png",
+                    width=img_w_px,
+                    height=img_h_px,
+                    scale=1,
                 )
-                img_io = io.BytesIO(img_bytes)
-                pdf.image(img_io, x=img_x_pos, y=img_y_pos, w=img_w_mm, h=img_h_mm)
+                # Persist to a temp file (fpdf.image() prefers a file path)
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
                     tmp.write(img_bytes)
                     img_path = tmp.name
                     tmp_paths.append(img_path)
 
+                # New page per chart
                 pdf.add_page()
                 pdf.set_font("Arial", "B", 14)
                 pdf.set_xy(margin_mm, margin_mm)
-                pdf.cell(w=img_w_mm, h=10, txt=(title or "Untitled Chart"), border=0, ln=1, align="C")
-                pdf.image(img_path, x=margin_mm, y=margin_mm + 15, w=img_w_mm, h=img_h_mm)
+                pdf.cell(w=img_w_mm, h=title_h_mm, txt=(title or "Untitled Chart"), border=0, ln=1, align="C")
+
+                # Place the image below the title
+                pdf.image(img_path, x=margin_mm, y=margin_mm + title_h_mm, w=img_w_mm, h=img_h_mm)
                 success += 1
 
             except Exception as e:
-                # Chart-specific error page (so users know which chart failed and why)
+                # Add a diagnostic page for this chart
                 pdf.add_page()
                 pdf.set_font("Arial", "B", 14)
                 pdf.set_xy(margin_mm, margin_mm)
-                pdf.cell(w=img_w_mm, h=10, txt=f"Error rendering chart: {title or 'Untitled'}", border=0, ln=1, align="C")
+                pdf.cell(w=img_w_mm, h=title_h_mm, txt=f"Error rendering chart: {title or 'Untitled'}", border=0, ln=1, align="C")
                 pdf.set_font("Arial", "", 10)
-                pdf.set_xy(margin_mm, margin_mm + 15)
+                pdf.set_xy(margin_mm, margin_mm + title_h_mm)
                 pdf.multi_cell(w=img_w_mm, h=6, txt=str(e), border=1, align="L")
 
         if success == 0:
             raise RuntimeError(
-                "All chart exports failed. This environment likely lacks required Chromium libraries. "
+                "All chart exports failed. This environment likely lacks a working Chromium for Kaleido. "
                 "Use HTML export or install the OS libs (see message above)."
             )
 
@@ -599,6 +609,7 @@ def create_pdf_report(charts: List[Tuple[str, "px.Figure"]]) -> bytes:
                 os.remove(p)
             except Exception:
                 pass
+
 def _style_for_export(fig, *, kind: str | None = None):
     """
     Safe export styling:
