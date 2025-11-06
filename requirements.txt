@@ -9,7 +9,6 @@ plotly>=5.20
 matplotlib>=3.8
 seaborn>=0.13
 fpdf2
-plotly-get-chrome
 kaleido
 
 # ML stack (versions known to play nicely together on Linux)
