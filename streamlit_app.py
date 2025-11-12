@@ -1,11 +1,10 @@
-import os
 import pandas as pd
 import numpy as np
 import streamlit as st
 import plotly.express as px
 import CSVCuration
-import io
-from fpdf import FPDF 
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 st.set_page_config(page_title="EE Analytics Dashboard", layout="wide")
 
@@ -47,28 +46,30 @@ def load_data(src) -> pd.DataFrame:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Uploads & curation (sidebar)
+# Sidebar: REQUIRED curated CSV, optional curation below
 # ──────────────────────────────────────────────────────────────────────────────
 st.sidebar.header("Data")
 
 st.sidebar.info(
-    "**Choose ONE path:**\n\n"
-    "1) **Path A – Curated CSV ready**\n"
-    "   Upload your curated CSV below (no need to click **Run curation**).\n\n"
-    "2) **Path B – Start from raw files**\n"
-    "   Upload the **Programme** file and the **Cost** file, then click **Run curation**.\n"
-    "   When it finishes, **download the curated CSV and upload it** under **Curated CSV** below."
+    "**To use the dashboard, upload a curated CSV.**\n\n"
+    "If you **don’t have** a curated CSV yet, you can **create one below** by uploading the "
+    "**Programme** and **Cost** files and clicking **Run curation**. "
+    "When curation completes, **download the curated CSV and upload it here**."
 )
 
-# Path B — raw files
-st.sidebar.subheader("Path B — Upload raw files")
+# 1) REQUIRED — curated CSV to run the dashboard
+st.sidebar.subheader("Required — Upload curated CSV")
+uploaded_curated = st.sidebar.file_uploader("Curated CSV", type=["csv"], key="curated_upload")
+
+# 2) OPTIONAL — generate curated CSV from raw files (helper)
+st.sidebar.divider()
+st.sidebar.subheader("Need a curated CSV? Generate it from raw files")
 new_uploaded_programme = st.sidebar.file_uploader(
     "Programme file (CSV/XLSX/XLSM/XLS)", type=["csv", "xlsx", "xlsm", "xls"], key="prog_upload"
 )
 new_uploaded_cost = st.sidebar.file_uploader(
     "Cost file (CSV/XLSX/XLSM/XLS)", type=["csv", "xlsx", "xlsm", "xls"], key="cost_upload"
 )
-
 run = st.sidebar.button("▶️ Run curation", use_container_width=True)
 
 df_curated = None
@@ -97,7 +98,7 @@ if run:
 # Curated CSV download (after curation)
 if csv_bytes is not None:
     st.sidebar.success(
-        "Curation complete. **Step 2:** Download the curated CSV, then upload it under **Path A → Curated CSV**."
+        "Curation complete. **Step 2:** Download the curated CSV, then upload it under **Required — Upload curated CSV** above."
     )
     st.sidebar.download_button(
         "💾 Download curated CSV",
@@ -109,22 +110,17 @@ if csv_bytes is not None:
 else:
     st.sidebar.caption(
         "After curation completes, a download button will appear here. "
-        "Then upload the curated CSV under **Path A** below."
+        "Then upload the curated CSV under **Required — Upload curated CSV** above."
     )
-
-st.sidebar.divider()
-
-# Path A — curated CSV
-st.sidebar.subheader("Path A — Or upload a curated CSV")
-uploaded_curated = st.sidebar.file_uploader("Curated CSV", type=["csv"], key="curated_upload")
 
 # Pick data source (no local file fallback)
 data_src = uploaded_curated if uploaded_curated is not None else None
 
 if data_src is None:
     st.info(
-        "**No data loaded.** Either upload a curated CSV (Path A), **or** upload Programme & Cost and run curation, "
-        "then upload the curated CSV (Path B)."
+        "**No data loaded.** Please upload a **curated CSV** in the sidebar. "
+        "If you don’t have one, scroll down in the sidebar to **generate it from raw files**, "
+        "download it, then upload it here."
     )
     st.stop()
 
@@ -298,63 +294,122 @@ def safe_plot(check_df: pd.DataFrame, plot_callable):
         return
     plot_callable()
 
-
-# PDF Generation
-def create_pdf_report(charts: list) -> bytes:
-    """Generates a PDF report from a list of (title, plotly_fig) tuples."""
-    pdf = FPDF(orientation="L", unit="mm", format="A4")
-    pdf.set_auto_page_break(auto=False)
-    
-    # Standard page dimensions
-    page_w_mm = 297  # A4 Landscape
-    page_h_mm = 210
-    margin_mm = 10
-    
-    # Image dimensions 
-    img_w_mm = page_w_mm - (2 * margin_mm)  # 277
-    img_h_mm = page_h_mm - (2 * margin_mm) - 20 # 170 (leave 20mm for title)
-     
-    img_w_px = 1200
-    img_h_px = 700
+def create_html_report(charts: list[tuple[str, "px.Figure"]]) -> bytes:
+    """
+    Build a single self-contained HTML with all charts (interactive).
+    Applies export styling per figure. Uses SGT for timestamp.
+    """
+    now_sgt = datetime.now(ZoneInfo("Asia/Singapore")).strftime("%Y-%m-%d %H:%M:%S")
+    parts = [
+        "<!doctype html><html><head><meta charset='utf-8'>",
+        "<title>EE Analytics Report</title>",
+        ("<style>"
+         "body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:24px;}"
+         "h1{font-size:22px;margin:0 0 8px 0;}"
+         "h2{font-size:18px;margin:20px 0 8px 0;}"
+         "hr{margin:24px 0;border:0;border-top:1px solid #ddd;}"
+         "</style>"),
+        "</head><body>",
+        f"<h1>EE Analytics Report</h1><p>Generated: {now_sgt}</p><hr/>"
+    ]
 
     for title, fig in charts:
-        try:
-            pdf.add_page()
-            
-            # --- Title ---
-            pdf.set_font("Arial", "B", 14)
-            pdf.set_xy(margin_mm, margin_mm)
-            pdf.cell(w=img_w_mm, h=10, txt=title or "Untitled Chart", border=0, ln=1, align="C")
+        parts.append(f"<h2>{(title or 'Untitled Chart')}</h2>")
+        styled = _style_for_export(fig)
+        parts.append(styled.to_html(full_html=False, include_plotlyjs="inline"))
+        parts.append("<hr/>")
 
-            # --- Chart Image ---
-            # Convert Plotly fig to image bytes
-            img_bytes = fig.to_image(format="png", width=img_w_px, height=img_h_px, scale=1)
-            img_io = io.BytesIO(img_bytes)
+    parts.append("</body></html>")
+    return "\n".join(parts).encode("utf-8")
 
-            # Add image to PDF
-            # Center the image block
-            img_x_pos = margin_mm
-            img_y_pos = margin_mm + 15  # Place it below the title
-            pdf.image(img_io, x=img_x_pos, y=img_y_pos, w=img_w_mm, h=img_h_mm)
+def _style_for_export(fig, *, kind: str | None = None):
+    """
+    Safe export styling:
+    - plotly_white template, consistent fonts
+    - Force BLUE for non-geo/heatmap/pie using update_traces (robust)
+    - Fix heatmap/long y-label margins
+    - Ensure scatter lines show markers for readability
+    """
+    import copy
+    f = copy.deepcopy(fig)
 
-        except Exception as e:
-            # Add an error page if a chart fails
-            st.error(f"Failed to render chart: {title}. Error: {e}")
-            try:
-                pdf.add_page()
-                pdf.set_font("Arial", "B", 14)
-                pdf.set_xy(margin_mm, margin_mm)
-                pdf.cell(w=img_w_mm, h=10, txt=f"Error rendering chart: {title}", border=0, ln=1, align="C")
-                pdf.set_font("Arial", "", 10)
-                pdf.set_xy(margin_mm, margin_mm + 15)
-                pdf.multi_cell(w=img_w_mm, h=10, txt=str(e), border=1, align="L")
-            except Exception:
-                pass # Failsafe
+    data = tuple(getattr(f, "data", ()) or ())
+    trace_types = set()
+    for t in data:
+        ttype = getattr(t, "type", "") or ""
+        trace_types.add(ttype)
 
-    # Output PDF as bytes
-    return pdf.output(dest='S').encode('latin-1')
-# ------------------------------------------------------------------------------
+    is_geo     = any(t in trace_types for t in ("scattergeo", "choropleth"))
+    is_heatmap = any(t in trace_types for t in ("heatmap", "imshow"))
+    is_pie     = "pie" in trace_types
 
+    f.update_layout(
+        template="plotly_white",
+        font=dict(family="Inter, Segoe UI, Roboto, Arial, sans-serif", size=12),
+        title=dict(font=dict(size=18)),
+        legend=dict(font=dict(size=11)),
+        margin=dict(l=80, r=20, t=60, b=60),
+        xaxis_title_standoff=30,
+        yaxis_title_standoff=40,
+    )
+    f.update_layout(
+        hovermode="closest",
+        hoverlabel=dict(
+            bgcolor="white",
+            font_color="black",
+            font_size=12,
+            bordercolor="black"
+        )
+    )
+    f.update_xaxes(automargin=True, tickangle=0)
+    f.update_yaxes(automargin=True)
+
+    BLUE = "#1f77b4"
+
+    if not (is_geo or is_heatmap or is_pie):
+        f.update_traces(marker_color=BLUE, selector=dict(type="bar"))
+        f.update_traces(marker_color=BLUE, selector=dict(type="histogram"))
+        f.update_traces(marker_color=BLUE, selector=dict(type="barpolar"))
+
+        f.update_traces(line=dict(color=BLUE), selector=dict(type="scatter"))
+        f.update_traces(marker=dict(color=BLUE, line=dict(color=BLUE)), selector=dict(type="scatter"))
+        f.update_traces(line=dict(color=BLUE), selector=dict(type="scattergl"))
+        f.update_traces(marker=dict(color=BLUE, line=dict(color=BLUE)), selector=dict(type="scattergl"))
+
+        f.update_traces(marker_color=BLUE, selector=dict(type="box"))
+        f.update_traces(marker_color=BLUE, selector=dict(type="violin"))
+        f.update_traces(marker_color=BLUE, selector=dict(type="funnel"))
+        f.update_traces(marker_color=BLUE, selector=dict(type="waterfall"))
+
+        for t in data:
+            if getattr(t, "type", "") in ("scatter", "scattergl"):
+                mode = getattr(t, "mode", "lines") or "lines"
+                if "lines" in mode and "markers" not in mode:
+                    t.mode = mode + "+markers"
+
+    if is_heatmap:
+        cur_l = int((f.layout.margin.l or 0))
+        f.update_layout(margin=dict(l=max(cur_l, 120)))
+        f.update_yaxes(tickangle=0)
+
+    if "bar" in trace_types:
+        any_h = any(getattr(t, "orientation", None) == "h" for t in data if getattr(t, "type", "") == "bar")
+        if any_h:
+            yvals = []
+            for t in data:
+                if getattr(t, "type", "") == "bar" and getattr(t, "orientation", None) == "h":
+                    y = getattr(t, "y", None)
+                    if y is not None:
+                        yvals = [str(v) for v in list(y)]
+                        break
+            max_label_len = max((len(s) for s in yvals), default=12)
+            left_padding = int(min(max(120, max_label_len * 7), 340))
+            f.update_layout(margin=dict(l=left_padding))
+            nrows = len(set(yvals)) or 6
+            base_h = 28 * nrows + 140
+            f.update_layout(height=min(max(base_h, 360), 1200))
+
+    return f
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Global date span (from df_full)
@@ -391,9 +446,9 @@ with st.sidebar:
 
     c1, c2 = st.columns(2)
     with c1:
-        st.button("✅ Select all filters", key="btn_select_all_filters", on_click=select_all_filters)
+        st.button("✅ Select all filters", key="btn_select_all_filters", on_click=select_all_filters, use_container_width=True)
     with c2:
-        st.button("🧹 Clear all filters", key="btn_clear_all_filters", on_click=clear_all_filters)
+        st.button("🧹 Clear all filters", key="btn_clear_all_filters", on_click=clear_all_filters, use_container_width=True)
 
     if "Run_Month" in df.columns:
         full_min_date, full_max_date = st.session_state["run_month_full_span"]
@@ -431,10 +486,9 @@ df_f = df[mask].copy()
 st.caption(f"Showing **{len(df_f):,}** of **{len(df):,}** rows after filters")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Chart Collection List
+# Chart Collection List (for HTML report)
 # ──────────────────────────────────────────────────────────────────────────────
-charts_for_pdf = []
-
+charts_for_html: list[tuple[str, "px.Figure"]] = []
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Tabs & visuals
@@ -458,8 +512,8 @@ with tab1:
         ts = df_f.groupby("Run_Month").size().reset_index(name="Participants").sort_values("Run_Month")
         fig = px.line(ts, x="Run_Month", y="Participants", markers=True, title="Participants over Time")
         fig.update_layout(yaxis_title="Participants", xaxis_title="Run Month")
-        
-        charts_for_pdf.append(("Participants over Time", fig)) # Add to PDF list
+
+        charts_for_html.append(("Participants over Time", fig))
         plotly_show(fig, prefix="tab1_participants_over_time")
 
     if "Programme Start Date" in df_f.columns:
@@ -473,15 +527,15 @@ with tab1:
             mon["Month"] = mon["Start_Month_Num"].map({1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"})
             mon = mon.sort_values("Start_Month_Num")
             figm = px.bar(mon, x="Month", y="Applications", title="Applications by Start Month")
-            
-            charts_for_pdf.append(("Applications by Start Month", figm)) # Add to PDF list
+
+            charts_for_html.append(("Applications by Start Month", figm))
             plotly_show(figm, prefix="tab1_by_start_month")
 
         with col_b:
             q = tmp.groupby("Start_Quarter").size().reset_index(name="Applications")
             figq = px.bar(q, x="Start_Quarter", y="Applications", title="Applications by Start Quarter")
-            
-            charts_for_pdf.append(("Applications by Start Quarter", figq)) # Add to PDF list
+
+            charts_for_html.append(("Applications by Start Quarter", figq))
             plotly_show(figq, prefix="tab1_by_start_quarter")
 
 # Tab 2: Geography
@@ -497,7 +551,6 @@ with tab2:
         if exclude_sg:
             base = base[base[country_col] != "Singapore"].copy()
 
-        # Map (drop Unknown/Missing)
         s = base[country_col].astype("string").str.strip()
         s_norm = s.str.lower()
         mask_unknown = s.isna() | (s == "") | s_norm.isin(UNKNOWN_LIKE)
@@ -534,10 +587,10 @@ with tab2:
                 coloraxis_colorbar_title="Participants",
                 coloraxis_cmin=cmin,
                 coloraxis_cmax=cmax,
-                margin=dict(l=0, r=0, t=40, b=0), # Add top margin for title
+                margin=dict(l=0, r=0, t=40, b=0),
             )
-            
-            charts_for_pdf.append(("Geospatial: Participants by Country", fig)) # Add to PDF list
+
+            charts_for_html.append(("Geospatial: Participants by Country", fig))
             plotly_show(fig, prefix="tab2_geo_map")
 
         # Top-K countries bar
@@ -555,7 +608,7 @@ with tab2:
 
             if s.empty:
                 st.info("No valid countries to display for the current filters.")
-            else: # Changed st.stop() to else
+            else:
                 counts_df = s.value_counts(dropna=False).reset_index()
                 counts_df.columns = [country_col, "Participants"]
                 total_universe = int(counts_df["Participants"].sum())
@@ -573,8 +626,8 @@ with tab2:
                 )
                 fig_bar.update_traces(textposition="outside", cliponaxis=False)
                 fig_bar.update_layout(xaxis_tickangle=-45, yaxis_title="Participants", xaxis_title="Country")
-                
-                charts_for_pdf.append((chart_title, fig_bar)) # Add to PDF list
+
+                charts_for_html.append((chart_title, fig_bar))
                 plotly_show(fig_bar, prefix="tab2_geo_pareto")
 
                 sg_note = " (Singapore excluded)" if exclude_sg else ""
@@ -646,8 +699,8 @@ with tab3:
             )
             fig_hm1.update_traces(hovertemplate=hover_tmpl)
             fig_hm1.update_layout(xaxis_title="Country Of Residence", yaxis_title="Programme (Anon)")
-            
-            charts_for_pdf.append((chart_title, fig_hm1)) # Add to PDF list
+
+            charts_for_html.append((chart_title, fig_hm1))
             plotly_show(fig_hm1, prefix="tab3_prog_country_heatmap")
 
         # Heatmap 2: Top Countries × Primary Category
@@ -696,8 +749,8 @@ with tab3:
                 )
                 fig_cat.update_traces(hovertemplate=hover_tmpl2)
                 fig_cat.update_layout(xaxis_title="Primary Category", yaxis_title="Country Of Residence")
-                
-                charts_for_pdf.append((chart_title, fig_cat)) # Add to PDF list
+
+                charts_for_html.append((chart_title, fig_cat))
                 plotly_show(fig_cat, prefix="tab3_country_primarycat_heatmap")
     else:
         st.info("Required columns not found: please ensure ‘Truncated Programme Name’ and ‘Country Of Residence’ are present.")
@@ -715,37 +768,30 @@ with tab4:
         top_titles = s_titles.value_counts(dropna=False).head(top_k).reset_index()
         top_titles.columns = ["Job Title", "Participants"]
 
-        # Wrapped in a function for safe_plot and PDF capture
         def plot_top_titles():
             chart_title = f"Top {top_k} Job Titles"
             fig = px.bar(top_titles, x="Participants", y="Job Title", orientation="h", title=chart_title)
-            charts_for_pdf.append((chart_title, fig))
+            charts_for_html.append((chart_title, fig))
             plotly_show(fig, prefix="tab4_top_titles")
-        
         safe_plot(top_titles, plot_top_titles)
-
 
     org_col = "Organisation Name"
     if org_col in df_f.columns:
         df_org = add_unknown_checkbox_and_note(df_f, org_col, label="Organisation", key="orgs", note_style="caption")
         top_orgs = df_org[org_col].value_counts().nlargest(top_k).reset_index()
         top_orgs.columns = ["Organisation", "Participants"]
-        
-        # Wrapped in a function for safe_plot and PDF capture
+
         def plot_top_orgs():
             chart_title = f"Top {top_k} Organisations"
             fig = px.bar(top_orgs, x="Participants", y="Organisation", orientation="h", title=chart_title)
-            charts_for_pdf.append((chart_title, fig))
-            plotly_show(fig, prefix="tab4_top_orgs", theme="streamlit")
-
+            charts_for_html.append((chart_title, fig))
+            plotly_show(fig, prefix="tab4_top_orgs")
         safe_plot(top_orgs, plot_top_orgs)
 
     if "Domain" in df_f.columns:
         df_dom = add_unknown_checkbox_and_note(df_f, "Domain", label="Domain", key="domain_tab4", note_style="caption")
-
         include_unknown_domain = bool(st.session_state.get("domain_tab4", False))
 
-        # Hide “Others” by default for clearer insights
         if not include_unknown_domain:
             mask_others = (df_dom["Domain"].astype("string").str.strip().str.lower() == "others")
             df_dom = df_dom.loc[~mask_others].copy()
@@ -758,27 +804,23 @@ with tab4:
             "but still counted as valid data in the note above."
         )
 
-        # Wrapped in a function for safe_plot and PDF capture
         def plot_top_domains():
             chart_title = f"Top {int(top_k)} Domains"
             fig = px.bar(top_domains, x="Participants", y="Domain", orientation="h", title=chart_title)
-            charts_for_pdf.append((chart_title, fig))
-            plotly_show(fig, prefix="tab4_top_domains", theme="streamlit")
-        
+            charts_for_html.append((chart_title, fig))
+            plotly_show(fig, prefix="tab4_top_domains")
         safe_plot(top_domains, plot_top_domains)
 
     if "Seniority" in df_f.columns:
         df_sen = add_unknown_checkbox_and_note(df_f, "Seniority", key="seniority", note_style="caption")
         sen = df_sen["Seniority"].value_counts().reset_index()
         sen.columns = ["Seniority", "Participants"]
-        
-        # Wrapped in a function for safe_plot and PDF capture
+
         def plot_seniority():
             chart_title = "Participants by Seniority"
             fig = px.bar(sen, x="Seniority", y="Participants", title=chart_title)
-            charts_for_pdf.append((chart_title, fig))
+            charts_for_html.append((chart_title, fig))
             plotly_show(fig, prefix="tab4_seniority")
-            
         safe_plot(sen, plot_seniority)
 
 # Tab 5: Age & Demographics
@@ -799,27 +841,23 @@ with tab5:
 
         agec = (s.value_counts(dropna=False).reindex(order).fillna(0).rename_axis("Age Group").reset_index(name="Participants"))
 
-        # Wrapped in a function for safe_plot and PDF capture
         def plot_age_group():
             chart_title = "Participants by Age Group"
             fig = px.bar(agec, x="Age Group", y="Participants", title=chart_title)
-            charts_for_pdf.append((chart_title, fig))
+            charts_for_html.append((chart_title, fig))
             plotly_show(fig, prefix="tab5_agegroup_bar")
-
         safe_plot(agec, plot_age_group)
 
     if "Gender" in df_f.columns:
         df_gender = add_unknown_checkbox_and_note(df_f, "Gender", key="gender_tab5", note_style="caption")
         gender = df_gender["Gender"].value_counts().reset_index()
         gender.columns = ["Gender", "Participants"]
-        
-        # Wrapped in a function for safe_plot and PDF capture
+
         def plot_gender():
             chart_title = "Gender Split"
             fig = px.pie(gender, names="Gender", values="Participants", title=chart_title)
-            charts_for_pdf.append((chart_title, fig))
+            charts_for_html.append((chart_title, fig))
             plotly_show(fig, prefix="tab5_gender_pie")
-        
         safe_plot(gender, plot_gender)
 
 # Tab 6: Category Insights
@@ -859,8 +897,8 @@ with tab_6:
                     fig.update_traces(textposition="outside", cliponaxis=False)
                     ymax = min(100.0, float(dist["Percentage"].max()) + 10.0)
                     fig.update_layout(yaxis_range=[0, ymax])
-                    
-                    charts_for_pdf.append((chart_title, fig)) # Add to PDF list
+
+                    charts_for_html.append((chart_title, fig))
                     plotly_show(fig, prefix="tab6_age_dist_by_cat")
         else:
             st.info("Required columns not found: please include ‘Age_Group’ and the selected category column.")
@@ -903,8 +941,8 @@ with tab_6:
                     fig = px.bar(final_df, x=country_col, y="Participants", title=chart_title, text=final_df["Share_%"].round(1).astype(str) + "%")
                     fig.update_traces(textposition="outside", cliponaxis=False)
                     fig.update_layout(xaxis_tickangle=-45, yaxis_title="Participants", xaxis_title="Country")
-                    
-                    charts_for_pdf.append((chart_title, fig)) # Add to PDF list
+
+                    charts_for_html.append((chart_title, fig))
                     plotly_show(fig, prefix="tab6_country_dist_by_cat_like_tab2")
 
                     sg_note = " (Singapore excluded)" if exclude_sg_tab6 else ""
@@ -945,8 +983,8 @@ with tab_7:
                 hover_data=['Truncated Programme Name']
             )
             fig_scatter.update_traces(marker=dict(size=12, opacity=0.7, line=dict(width=1, color='DarkSlateGrey')))
-            
-            charts_for_pdf.append((chart_title, fig_scatter)) # Add to PDF list
+
+            charts_for_html.append((chart_title, fig_scatter))
             plotly_show(fig_scatter, prefix="tab7_cost_vs_enrolment")
 
             st.divider()
@@ -959,8 +997,8 @@ with tab_7:
             chart_title = "Monthly Revenue Trend"
             fig_trend = px.line(monthly_revenue, x='Run_Month', y='Total_Revenue', title=chart_title, labels={'Run_Month': 'Month', 'Total_Revenue': 'Total Revenue ($)'}, markers=True)
             fig_trend.update_layout(yaxis_title="Total Revenue ($)", xaxis_title="Month")
-            
-            charts_for_pdf.append((chart_title, fig_trend)) # Add to PDF list
+
+            charts_for_html.append((chart_title, fig_trend))
             plotly_show(fig_trend, prefix="tab7_monthly_revenue")
 
             st.divider()
@@ -968,12 +1006,12 @@ with tab_7:
             if "Country Of Residence" in df_cost.columns:
                 top_countries = df_cost.groupby("Country Of Residence")["Programme Cost"].sum().nlargest(top_k).reset_index()
                 top_countries.columns = ["Country Of Residence", "Total Revenue"]
-                
+
                 chart_title = f"Top {top_k} Countries by Total Revenue"
                 fig2 = px.bar(top_countries, x="Total Revenue", y="Country Of Residence", orientation="h", title=chart_title)
-                
-                charts_for_pdf.append((chart_title, fig2)) # Add to PDF list
-                st.plotly_chart(fig2, use_container_width=True, theme="streamlit")
+
+                charts_for_html.append((chart_title, fig2))
+                st.plotly_chart(fig2, use_container_width=True)
 
 # Tab 8: Programme Deep Dive
 with tab_8:
@@ -983,16 +1021,16 @@ with tab_8:
     prog_col = "Truncated Programme Name"
     if prog_col not in df_f.columns:
         st.info("Programme column not found.")
-    else: # Changed st.stop() to else
+    else:
         progs = (df_f[prog_col].dropna().astype(str).sort_values().unique().tolist()) if not df_f.empty else []
         if not progs:
             st.info("No programmes available under current filters.")
-        else: # Changed st.stop() to else
+        else:
             sel_prog = st.selectbox("Select a programme", progs, index=0, key="prog_dd_select")
             p = df_f[df_f[prog_col] == sel_prog].copy()
             if p.empty:
                 st.info("No rows for this programme with current filters.")
-            else: # Changed st.stop() to else
+            else:
                 c1, c2, c3, c4, c5 = st.columns(5)
                 with c1:
                     st.metric("Participants", f"{len(p):,}")
@@ -1018,8 +1056,8 @@ with tab_8:
                     fig_ts.update_layout(yaxis_title="Participants", xaxis_title="Run Month")
                     fig_ts.update_xaxes(tickformat="%b %Y")
                     fig_ts.update_traces(hovertemplate="Run Month=%{x|%b %Y}<br>Participants=%{y}<extra></extra>")
-                    
-                    charts_for_pdf.append((f"{sel_prog}: {chart_title}", fig_ts)) # Add to PDF list
+
+                    charts_for_html.append((f"{sel_prog}: {chart_title}", fig_ts))
                     plotly_show(fig_ts, prefix="tab8_prog_ts")
 
                 colL, colR = st.columns(2)
@@ -1029,13 +1067,12 @@ with tab_8:
                         dq_caption(p, "Application Status", "Application Status")
                         status = p_status["Application Status"].value_counts().reset_index()
                         status.columns = ["Application Status", "Count"]
-                        
+
                         def plot_app_status():
                             chart_title = "Application Status Breakdown"
                             fig = px.bar(status, x="Application Status", y="Count", title=chart_title, text="Count").update_traces(textposition="outside", cliponaxis=False).update_layout(xaxis_tickangle=-30)
-                            charts_for_pdf.append((f"{sel_prog}: {chart_title}", fig))
+                            charts_for_html.append((f"{sel_prog}: {chart_title}", fig))
                             plotly_show(fig, prefix="tab8_status_bar")
-
                         safe_plot(status, plot_app_status)
 
                     if "Gender" in p.columns:
@@ -1043,13 +1080,12 @@ with tab_8:
                         dq_caption(p, "Gender", "Gender")
                         gender = p_gender["Gender"].value_counts().reset_index()
                         gender.columns = ["Gender", "Participants"]
-                        
+
                         def plot_gender_split():
                             chart_title = "Gender Split"
                             fig = px.pie(gender, names="Gender", values="Participants", title=chart_title)
-                            charts_for_pdf.append((f"{sel_prog}: {chart_title}", fig))
+                            charts_for_html.append((f"{sel_prog}: {chart_title}", fig))
                             plotly_show(fig, prefix="tab8_gender_pie")
-                        
                         safe_plot(gender, plot_gender_split)
 
                 with colR:
@@ -1075,13 +1111,12 @@ with tab_8:
                                 order = [c for c in order if c != "Unknown"] + ["Unknown"]
                                 ctry_top["Country"] = pd.Categorical(ctry_top["Country"], categories=order, ordered=True)
                                 ctry_top = ctry_top.sort_values("Country")
-                            
+
                             def plot_top_countries():
                                 chart_title = f"Top {top_k} Countries (Participants)"
                                 fig = px.bar(ctry_top, x="Participants", y="Country", orientation="h", title=chart_title)
-                                charts_for_pdf.append((f"{sel_prog}: {chart_title}", fig))
+                                charts_for_html.append((f"{sel_prog}: {chart_title}", fig))
                                 plotly_show(fig, prefix="tab8_top_countries")
-
                             safe_plot(ctry_top, plot_top_countries)
 
                     org_col = "Organisation Name"
@@ -1091,13 +1126,12 @@ with tab_8:
                         orgs = p_org[org_col].value_counts().reset_index()
                         orgs.columns = ["Organisation", "Participants"]
                         orgs_top = orgs.head(top_k)
-                        
+
                         def plot_prog_top_orgs():
                             chart_title = f"Top {top_k} Organisations (Participants)"
                             fig = px.bar(orgs_top, x="Participants", y="Organisation", orientation="h", title=chart_title)
-                            charts_for_pdf.append((f"{sel_prog}: {chart_title}", fig))
+                            charts_for_html.append((f"{sel_prog}: {chart_title}", fig))
                             plotly_show(fig, prefix="tab8_top_orgs")
-                        
                         safe_plot(orgs_top, plot_prog_top_orgs)
 
                 colA, colB = st.columns(2)
@@ -1107,13 +1141,12 @@ with tab_8:
                         dq_caption(p, "Seniority", "Seniority")
                         sen = p_sen["Seniority"].value_counts().reset_index()
                         sen.columns = ["Seniority", "Participants"]
-                        
+
                         def plot_prog_seniority():
                             chart_title = "Seniority Mix"
                             fig = px.bar(sen, x="Seniority", y="Participants", title=chart_title)
-                            charts_for_pdf.append((f"{sel_prog}: {chart_title}", fig))
+                            charts_for_html.append((f"{sel_prog}: {chart_title}", fig))
                             plotly_show(fig, prefix="tab8_seniority")
-
                         safe_plot(sen, plot_prog_seniority)
 
                 with colB:
@@ -1135,8 +1168,8 @@ with tab_8:
                             chart_title = "Age Group Distribution"
                             fig = px.bar(age_df, x="Age Group", y="Participants", title=chart_title, text="Participants")
                             fig.update_traces(textposition="outside", cliponaxis=False)
-                            
-                            charts_for_pdf.append((f"{sel_prog}: {chart_title}", fig)) # Add to PDF list
+
+                            charts_for_html.append((f"{sel_prog}: {chart_title}", fig))
                             plotly_show(fig, prefix="tab8_agegroup")
 
                 st.markdown("##### Runs for this Programme")
@@ -1165,39 +1198,23 @@ with tab_9:
     st.download_button("Download filtered CSV", data=df_f.to_csv(index=False).encode("utf-8-sig"), file_name="filtered_export.csv", mime="text/csv")
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  PDF Download Section
+#  HTML Download Section (only)
 # ──────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.divider()
-    st.header("📥 Download PDF Report")
-    st.info(
-        "Generate a PDF of all charts based on the active filters. "
-        "A download button will appear below."
-    )
+    st.header("📥 Download Report")
 
-    if "pdf_bytes" not in st.session_state:
-        st.session_state.pdf_bytes = None
-    
-    if st.button("Generate PDF Report", key="btn_generate_pdf", use_container_width=True):
-        if not charts_for_pdf:
-            st.error("No charts were generated. Cannot create PDF.")
-            st.session_state.pdf_bytes = None # Clear any old PDF
-        else:
-            with st.spinner(f"Generating PDF with {len(charts_for_pdf)} charts..."):
-                try:
-                    # Store the generated PDF in session_state
-                    st.session_state.pdf_bytes = create_pdf_report(charts_for_pdf)
-                except Exception as e:
-                    st.error(f"An error occurred during PDF generation: {e}")
-                    st.session_state.pdf_bytes = None # Clear on failure
-                    
-    if st.session_state.pdf_bytes:
-        st.success("Your PDF report is ready!")
+    if "html_bytes" not in st.session_state:
+        st.session_state.html_bytes = None
+
+    if st.button("Generate HTML Report", key="btn_generate_html", use_container_width=True):
+        st.session_state.html_bytes = create_html_report(charts_for_html)
+
+    if st.session_state.html_bytes:
         st.download_button(
-            label="Click here to Download PDF",
-            data=st.session_state.pdf_bytes,
-            file_name="Dashboard_Report.pdf",
-            mime="application/pdf",
+            "Download HTML Report (Interactive)",
+            data=st.session_state.html_bytes,
+            file_name="Dashboard_Report.html",
+            mime="text/html",
             use_container_width=True,
-            on_click=lambda: st.session_state.update(pdf_bytes=None)  
         )
