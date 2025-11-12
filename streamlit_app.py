@@ -1,28 +1,10 @@
-import os
 import pandas as pd
 import numpy as np
 import streamlit as st
 import plotly.express as px
 import CSVCuration
-import io
-from typing import List, Tuple
 from datetime import datetime
 from zoneinfo import ZoneInfo
-import copy
-import plotly.io as pio
-import time
-import traceback
-from io import BytesIO
-
-# Prefer the new defaults API; fall back silently if not available
-try:
-    pio.defaults.to_image.format = "png"
-except Exception:
-    try:
-        # Legacy (still works for now)
-        pio.kaleido.scope.default_format = "png"
-    except Exception:
-        pass
 
 st.set_page_config(page_title="EE Analytics Dashboard", layout="wide")
 
@@ -64,28 +46,30 @@ def load_data(src) -> pd.DataFrame:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Uploads & curation (sidebar)
+# Sidebar: REQUIRED curated CSV, optional curation below
 # ──────────────────────────────────────────────────────────────────────────────
 st.sidebar.header("Data")
 
 st.sidebar.info(
-    "**Choose ONE path:**\n\n"
-    "1) **Path A – Curated CSV ready**\n"
-    "   Upload your curated CSV below (no need to click **Run curation**).\n\n"
-    "2) **Path B – Start from raw files**\n"
-    "   Upload the **Programme** file and the **Cost** file, then click **Run curation**.\n"
-    "   When it finishes, **download the curated CSV and upload it** under **Curated CSV** below."
+    "**To use the dashboard, upload a curated CSV.**\n\n"
+    "If you **don’t have** a curated CSV yet, you can **create one below** by uploading the "
+    "**Programme** and **Cost** files and clicking **Run curation**. "
+    "When curation completes, **download the curated CSV and upload it here**."
 )
 
-# Path B — raw files
-st.sidebar.subheader("Path B — Upload raw files")
+# 1) REQUIRED — curated CSV to run the dashboard
+st.sidebar.subheader("Required — Upload curated CSV")
+uploaded_curated = st.sidebar.file_uploader("Curated CSV", type=["csv"], key="curated_upload")
+
+# 2) OPTIONAL — generate curated CSV from raw files (helper)
+st.sidebar.divider()
+st.sidebar.subheader("Need a curated CSV? Generate it from raw files")
 new_uploaded_programme = st.sidebar.file_uploader(
     "Programme file (CSV/XLSX/XLSM/XLS)", type=["csv", "xlsx", "xlsm", "xls"], key="prog_upload"
 )
 new_uploaded_cost = st.sidebar.file_uploader(
     "Cost file (CSV/XLSX/XLSM/XLS)", type=["csv", "xlsx", "xlsm", "xls"], key="cost_upload"
 )
-
 run = st.sidebar.button("▶️ Run curation", use_container_width=True)
 
 df_curated = None
@@ -114,7 +98,7 @@ if run:
 # Curated CSV download (after curation)
 if csv_bytes is not None:
     st.sidebar.success(
-        "Curation complete. **Step 2:** Download the curated CSV, then upload it under **Path A → Curated CSV**."
+        "Curation complete. **Step 2:** Download the curated CSV, then upload it under **Required — Upload curated CSV** above."
     )
     st.sidebar.download_button(
         "💾 Download curated CSV",
@@ -126,22 +110,17 @@ if csv_bytes is not None:
 else:
     st.sidebar.caption(
         "After curation completes, a download button will appear here. "
-        "Then upload the curated CSV under **Path A** below."
+        "Then upload the curated CSV under **Required — Upload curated CSV** above."
     )
-
-st.sidebar.divider()
-
-# Path A — curated CSV
-st.sidebar.subheader("Path A — Or upload a curated CSV")
-uploaded_curated = st.sidebar.file_uploader("Curated CSV", type=["csv"], key="curated_upload")
 
 # Pick data source (no local file fallback)
 data_src = uploaded_curated if uploaded_curated is not None else None
 
 if data_src is None:
     st.info(
-        "**No data loaded.** Either upload a curated CSV (Path A), **or** upload Programme & Cost and run curation, "
-        "then upload the curated CSV (Path B)."
+        "**No data loaded.** Please upload a **curated CSV** in the sidebar. "
+        "If you don’t have one, scroll down in the sidebar to **generate it from raw files**, "
+        "download it, then upload it here."
     )
     st.stop()
 
